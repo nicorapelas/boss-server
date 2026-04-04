@@ -1,7 +1,8 @@
 import type { NextFunction, Request, Response } from 'express'
 import { StoreSettings } from '../models/StoreSettings.js'
+import { mergeDefaultProductPresets } from '../utils/productPresets.js'
 
-const DEFAULT_DOC = {
+export const DEFAULT_STORE_SETTINGS_DOC = {
   _id: 'default' as const,
   storeName: 'ElectroPOS',
   storeAddressLines: [] as string[],
@@ -14,16 +15,33 @@ const DEFAULT_DOC = {
   nextLayBySeq: 1,
   nextQuoteSeq: 0,
   nextHouseAccountSeq: 0,
+  productPresets: {
+    entries: [] as { productId: string; category: string; subCategory: string; label: string }[],
+    categories: [] as string[],
+    subCategoriesByCategory: {} as Record<string, string[]>,
+  },
+}
+
+export async function ensureStoreSettingsDoc() {
+  let doc = await StoreSettings.findById('default').lean()
+  if (!doc) {
+    await StoreSettings.create(DEFAULT_STORE_SETTINGS_DOC)
+    doc = await StoreSettings.findById('default').lean()
+  }
+  return doc
 }
 
 export async function getStoreSettings(_req: Request, res: Response, next: NextFunction) {
   try {
-    let doc = await StoreSettings.findById('default').lean()
+    const doc = await ensureStoreSettingsDoc()
     if (!doc) {
-      await StoreSettings.create(DEFAULT_DOC)
-      doc = await StoreSettings.findById('default').lean()
+      res.status(500).json({ message: 'Store settings unavailable' })
+      return
     }
-    res.json(doc)
+    res.json({
+      ...doc,
+      productPresets: mergeDefaultProductPresets(doc.productPresets),
+    })
   } catch (e) {
     next(e)
   }
@@ -76,7 +94,14 @@ export async function updateStoreSettings(req: Request, res: Response, next: Nex
       { $set: set },
       { new: true, upsert: true, setDefaultsOnInsert: true },
     ).lean()
-    res.json(updated)
+    if (!updated) {
+      res.status(500).json({ message: 'Store settings unavailable' })
+      return
+    }
+    res.json({
+      ...updated,
+      productPresets: mergeDefaultProductPresets(updated.productPresets),
+    })
   } catch (e) {
     next(e)
   }

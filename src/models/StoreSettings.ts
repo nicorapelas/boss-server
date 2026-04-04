@@ -1,5 +1,35 @@
 import mongoose, { Schema } from 'mongoose'
 
+const presetEntrySchema = new Schema(
+  {
+    productId: { type: String, required: true, trim: true },
+    category: { type: String, required: true, trim: true },
+    subCategory: { type: String, required: true, trim: true },
+    label: { type: String, required: true, trim: true },
+  },
+  { _id: false },
+)
+
+const productPresetsSchema = new Schema(
+  {
+    entries: { type: [presetEntrySchema], default: [] },
+    categories: { type: [String], default: [] },
+    subCategoriesByCategory: { type: Schema.Types.Mixed, default: {} },
+  },
+  { _id: false },
+)
+
+export type IProductPresetsState = {
+  entries: Array<{
+    productId: string
+    category: string
+    subCategory: string
+    label: string
+  }>
+  categories: string[]
+  subCategoriesByCategory: Record<string, string[]>
+}
+
 /** Singleton POS / receipt / lay-by settings (one document). */
 export interface IStoreSettings {
   _id: string
@@ -17,6 +47,8 @@ export interface IStoreSettings {
   nextQuoteSeq: number
   /** Last assigned house account sequence; next account uses atomic increment. */
   nextHouseAccountSeq: number
+  /** Shared POS preset buttons (category → sub-category → product); synced to all tills. */
+  productPresets?: IProductPresetsState
 }
 
 const storeSettingsSchema = new Schema<IStoreSettings>(
@@ -34,6 +66,10 @@ const storeSettingsSchema = new Schema<IStoreSettings>(
     /** Last assigned quote sequence (next quote = this + 1 atomically). */
     nextQuoteSeq: { type: Number, default: 0, min: 0 },
     nextHouseAccountSeq: { type: Number, default: 0, min: 0 },
+    productPresets: {
+      type: productPresetsSchema,
+      default: () => ({ entries: [], categories: [], subCategoriesByCategory: {} }),
+    },
   },
   { _id: false },
 )

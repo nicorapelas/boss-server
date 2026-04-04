@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express'
 import { reservedQtyByProduct } from './layby.controller.js'
 import { Product } from '../models/Product.js'
+import { productTracksInventory } from '../utils/productInventory.js'
 
 export async function listProducts(_req: Request, res: Response, next: NextFunction) {
   try {
@@ -37,16 +38,25 @@ export async function listProducts(_req: Request, res: Response, next: NextFunct
       { $sort: { _skuMainNum: 1, _skuTypeNum: 1, sku: 1, name: 1 } },
       { $project: { _skuMainStr: 0, _skuTypeStr: 0, _skuMainNum: 0, _skuTypeNum: 0 } },
     ])
-    const withLayBy = items.map((p: { _id: unknown; stock?: number }) => {
-      const id = String(p._id)
-      const r = reserved.get(id) ?? 0
-      const stock = p.stock ?? 0
-      return {
-        ...p,
-        layByReservedQty: r,
-        availableQty: stock - r,
-      }
-    })
+    const withLayBy = items.map(
+      (p: { _id: unknown; stock?: number; trackInventory?: boolean }) => {
+        const id = String(p._id)
+        if (!productTracksInventory(p)) {
+          return {
+            ...p,
+            layByReservedQty: 0,
+            availableQty: null as number | null,
+          }
+        }
+        const r = reserved.get(id) ?? 0
+        const stock = p.stock ?? 0
+        return {
+          ...p,
+          layByReservedQty: r,
+          availableQty: stock - r,
+        }
+      },
+    )
     res.json(withLayBy)
   } catch (e) {
     next(e)
@@ -68,12 +78,13 @@ export async function getProduct(req: Request, res: Response, next: NextFunction
 
 export async function createProduct(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, sku, barcode, price, stock } = req.body as {
+    const { name, sku, barcode, price, stock, trackInventory } = req.body as {
       name?: string
       sku?: string
       barcode?: string | null
       price?: number
       stock?: number
+      trackInventory?: boolean
     }
     if (!name || !sku || price === undefined) {
       res.status(400).json({ message: 'name, sku, and price required' })
@@ -85,6 +96,7 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
       barcode: barcode ?? null,
       price,
       stock: stock ?? 0,
+      trackInventory: trackInventory !== false,
     })
     res.status(201).json(product)
   } catch (e) {
@@ -94,12 +106,13 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
 
 export async function updateProduct(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, sku, barcode, price, stock } = req.body as {
+    const { name, sku, barcode, price, stock, trackInventory } = req.body as {
       name?: string
       sku?: string
       barcode?: string | null
       price?: number
       stock?: number
+      trackInventory?: boolean
     }
     const $set: Record<string, unknown> = {}
     if (name !== undefined) $set.name = name
@@ -107,6 +120,7 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
     if (barcode !== undefined) $set.barcode = barcode
     if (price !== undefined) $set.price = price
     if (stock !== undefined) $set.stock = stock
+    if (trackInventory !== undefined) $set.trackInventory = Boolean(trackInventory)
     if (Object.keys($set).length === 0) {
       res.status(400).json({ message: 'No fields to update' })
       return

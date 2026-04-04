@@ -5,6 +5,7 @@ import { Product } from '../models/Product.js'
 import { Sale } from '../models/Sale.js'
 import { StoreCreditAccount, StoreCreditLedger } from '../models/StoreCreditAccount.js'
 import { StoreSettings } from '../models/StoreSettings.js'
+import { productTracksInventory } from '../utils/productInventory.js'
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100
@@ -161,12 +162,16 @@ export async function createLayBy(req: Request, res: Response, next: NextFunctio
       }
       const qty = row.quantity as number
       const lineTotal = round2(unitPrice * qty)
-      const stock = p.stock ?? 0
-      const rsv = reserved.get(String(p._id)) ?? 0
-      const available = stock - rsv
-      if (available < qty) {
-        res.status(409).json({ message: `Insufficient available stock for ${p.sku} (lay-by reservations)` })
-        return
+      if (productTracksInventory(p)) {
+        const stock = p.stock ?? 0
+        const rsv = reserved.get(String(p._id)) ?? 0
+        const available = stock - rsv
+        if (available < qty) {
+          res.status(409).json({
+            message: `Insufficient available stock for ${p.sku} (lay-by reservations)`,
+          })
+          return
+        }
       }
       lines.push({
         productId: p._id,
@@ -445,6 +450,10 @@ async function completeLayByInternal(layById: string, userId: string) {
 
   for (const row of normalized) {
     const qty = row.quantity
+    const p = byId.get(row.productId)
+    if (!productTracksInventory(p)) {
+      continue
+    }
     const updated = await Product.updateOne(
       { _id: row.productId, stock: { $gte: qty } },
       { $inc: { stock: -qty } },

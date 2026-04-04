@@ -7,6 +7,7 @@ import { Quote } from '../models/Quote.js'
 import { HouseAccount, HouseAccountLedger } from '../models/HouseAccount.js'
 import { Sale } from '../models/Sale.js'
 import { StoreCreditAccount, StoreCreditLedger } from '../models/StoreCreditAccount.js'
+import { productTracksInventory } from '../utils/productInventory.js'
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100
@@ -146,11 +147,13 @@ export async function createSale(req: Request, res: Response, next: NextFunction
           res.status(400).json({ message: `Unknown product ${String(qLine.productId)}` })
           return
         }
-        const rsv = reserved.get(String(p._id)) ?? 0
-        const available = (p.stock ?? 0) - rsv
-        if (available < qLine.quantity) {
-          res.status(409).json({ message: `Insufficient stock for ${p.sku}` })
-          return
+        if (productTracksInventory(p)) {
+          const rsv = reserved.get(String(p._id)) ?? 0
+          const available = (p.stock ?? 0) - rsv
+          if (available < qLine.quantity) {
+            res.status(409).json({ message: `Insufficient stock for ${p.sku}` })
+            return
+          }
         }
         lines.push({
           product: qLine.productId,
@@ -173,11 +176,13 @@ export async function createSale(req: Request, res: Response, next: NextFunction
           res.status(400).json({ message: `Unknown product ${row.productId}` })
           return
         }
-        const rsv = reserved.get(String(p._id)) ?? 0
-        const available = (p.stock ?? 0) - rsv
-        if (available < (row.quantity as number)) {
-          res.status(409).json({ message: `Insufficient stock for ${p.sku}` })
-          return
+        if (productTracksInventory(p)) {
+          const rsv = reserved.get(String(p._id)) ?? 0
+          const available = (p.stock ?? 0) - rsv
+          if (available < (row.quantity as number)) {
+            res.status(409).json({ message: `Insufficient stock for ${p.sku}` })
+            return
+          }
         }
         const catalog = Math.round((p.price ?? 0) * 100) / 100
         let unitPrice = catalog
@@ -208,6 +213,10 @@ export async function createSale(req: Request, res: Response, next: NextFunction
     const applied: Array<{ productId: string; quantity: number }> = []
     for (const row of normalized) {
       const qty = row.quantity as number
+      const prod = byId.get(row.productId as string)
+      if (!productTracksInventory(prod)) {
+        continue
+      }
       const updated = await Product.updateOne(
         { _id: row.productId, stock: { $gte: qty } },
         { $inc: { stock: -qty } },

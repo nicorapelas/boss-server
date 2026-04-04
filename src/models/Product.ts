@@ -41,6 +41,8 @@ export interface IProduct {
   longName?: string | null
   price: number
   stock: number
+  /** When false, item is service/labour — not quantity-limited by stock. Defaults to true. */
+  trackInventory?: boolean
   enabled?: boolean
   department?: IProductDepartment
   group?: IProductDepartment
@@ -58,6 +60,7 @@ const productSchema = new Schema<IProduct>(
     longName: { type: String, trim: true, default: null },
     price: { type: Number, required: true, min: 0, default: 0 },
     stock: { type: Number, required: true, default: 0 },
+    trackInventory: { type: Boolean, default: true },
     enabled: { type: Boolean, default: true },
     department: {
       code: { type: Number },
