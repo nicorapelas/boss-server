@@ -1,0 +1,7 @@
+{
+  "port": 4000,
+  "mongodbUri": "",
+  "accessTokenSecret": "",
+  "refreshTokenSecret": "",
+  "corsOrigins": []
+}

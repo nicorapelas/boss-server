@@ -1,0 +1,7 @@
+{
+  "port": 4000,
+  "mongodbUri": "mongodb://127.0.0.1:27017/electropos",
+  "accessTokenSecret": "dev-access-token-not-for-production",
+  "refreshTokenSecret": "dev-refresh-token-not-for-production",
+  "corsOrigins": ["http://localhost:5173", "http://127.0.0.1:5173"]
+}
