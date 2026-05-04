@@ -66,7 +66,7 @@ export interface ISale {
   refundedBy?: Types.ObjectId | null
   refundNote?: string
   /** How cashier settled the customer refund at the till. */
-  refundPayoutMethod?: 'cash' | 'card'
+  refundPayoutMethod?: 'cash' | 'card' | 'store_credit'
   /** Amount settled via chosen payout method (full sale refund). */
   refundPayoutAmount?: number
 }
@@ -114,7 +114,7 @@ const saleSchema = new Schema<ISale>(
     refundedAt: { type: Date },
     refundedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     refundNote: { type: String, trim: true },
-    refundPayoutMethod: { type: String, enum: ['cash', 'card'], trim: true },
+    refundPayoutMethod: { type: String, enum: ['cash', 'card', 'store_credit'], trim: true },
     refundPayoutAmount: { type: Number, min: 0 },
     legacy: {
       source: { type: String, enum: ['vector'] },

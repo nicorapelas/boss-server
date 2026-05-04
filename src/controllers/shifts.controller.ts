@@ -255,7 +255,8 @@ async function summarizeShift(shift: { _id: Types.ObjectId; tillCode: string; op
     const cashierId = String(r.refundedBy ?? '')
     const cashierName = userById.get(cashierId) || ''
     const pm = r.payoutMethod
-    const method: 'cash' | 'card' | undefined = pm === 'cash' || pm === 'card' ? pm : undefined
+    const method: 'cash' | 'card' | 'store_credit' | undefined =
+      pm === 'cash' || pm === 'card' ? pm : pm === 'store_credit' ? 'store_credit' : undefined
     return {
       saleId: typeof r.saleShortId === 'string' ? r.saleShortId : undefined,
       cashierId: r.refundedBy,

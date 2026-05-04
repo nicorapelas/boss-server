@@ -696,6 +696,7 @@ export async function getSale(req: Request, res: Response, next: NextFunction) {
 type RefundBody = {
   note?: string
   payoutMethod?: string
+  storeCreditPhone?: string
   lines?: Array<{ lineIndex?: number; quantity?: number }>
 }
 
@@ -755,8 +756,23 @@ export async function getSaleRefundPreview(req: Request, res: Response, next: Ne
       items: (sale.items ?? []).map((x) => ({ quantity: Number(x.quantity ?? 0) })),
       total: Number(sale.total ?? 0),
     })
+    let storeCreditPhoneFromLedger: string | undefined
+    if (Number(sale.storeCreditAmount ?? 0) > 0.005) {
+      const redeem = await StoreCreditLedger.findOne({
+        refType: 'sale',
+        refId: sale._id,
+        kind: 'redeem',
+      })
+        .select('phone')
+        .lean()
+      if (redeem?.phone) storeCreditPhoneFromLedger = redeem.phone
+    }
     res.json({
-      sale: { ...sale, cashier: serializeCashier(sale.cashier) },
+      sale: {
+        ...sale,
+        cashier: serializeCashier(sale.cashier),
+        ...(storeCreditPhoneFromLedger ? { storeCreditPhone: storeCreditPhoneFromLedger } : {}),
+      },
       refund: progress,
     })
   } catch (e) {
@@ -775,16 +791,16 @@ export async function refundSale(req: Request, res: Response, next: NextFunction
       res.status(400).json({ message: 'Use MongoDB sale _id (24 hex chars) or 10-char sale id' })
       return
     }
-    const { note, payoutMethod } = (req.body ?? {}) as RefundBody
+    const { note, payoutMethod, storeCreditPhone: rawRefundIssuePhone } = (req.body ?? {}) as RefundBody
     const noteTrim = typeof note === 'string' ? note.trim().slice(0, 2000) : ''
     const payoutMethodNorm =
-      payoutMethod === 'cash' || payoutMethod === 'card'
+      payoutMethod === 'cash' || payoutMethod === 'card' || payoutMethod === 'store_credit'
         ? payoutMethod
         : typeof payoutMethod === 'string'
           ? payoutMethod.trim().toLowerCase()
           : ''
-    if (payoutMethodNorm !== 'cash' && payoutMethodNorm !== 'card') {
-      res.status(400).json({ message: 'payoutMethod must be cash or card' })
+    if (payoutMethodNorm !== 'cash' && payoutMethodNorm !== 'card' && payoutMethodNorm !== 'store_credit') {
+      res.status(400).json({ message: 'payoutMethod must be cash, card, or store_credit' })
       return
     }
 
@@ -899,6 +915,18 @@ export async function refundSale(req: Request, res: Response, next: NextFunction
     reverseSc = round2(Math.min(remainingSc, Math.max(0, reverseSc)))
     reverseOa = round2(Math.min(remainingOa, Math.max(0, reverseOa)))
 
+    const netDrawerRefund = round2(Math.max(0, refundTotal - reverseSc - reverseOa))
+    let refundIssuePhone = ''
+    if (payoutMethodNorm === 'store_credit' && netDrawerRefund > 0.005) {
+      refundIssuePhone = normalizePhone(String(rawRefundIssuePhone ?? ''))
+      if (!refundIssuePhone) {
+        res.status(400).json({
+          message: 'storeCreditPhone required when refunding the cash/card portion as store credit',
+        })
+        return
+      }
+    }
+
     if (reverseSc > 0.005) {
       const redeem = await StoreCreditLedger.findOne({
         refType: 'sale',
@@ -967,6 +995,33 @@ export async function refundSale(req: Request, res: Response, next: NextFunction
       })
     }
 
+    const refundCashAmt = payoutMethodNorm === 'cash' ? netDrawerRefund : 0
+    const refundCardAmt = payoutMethodNorm === 'card' ? netDrawerRefund : 0
+    const refundStoreCreditIssued = payoutMethodNorm === 'store_credit' ? netDrawerRefund : undefined
+
+    if ((refundStoreCreditIssued ?? 0) > 0.005 && refundIssuePhone) {
+      let acct = await StoreCreditAccount.findOne({ phone: refundIssuePhone })
+      if (!acct) {
+        acct = await StoreCreditAccount.create({
+          phone: refundIssuePhone,
+          name: 'Customer',
+          balance: 0,
+        })
+      }
+      acct.balance = round2((acct.balance ?? 0) + refundStoreCreditIssued!)
+      await acct.save()
+      await StoreCreditLedger.create({
+        accountId: acct._id,
+        phone: refundIssuePhone,
+        amount: refundStoreCreditIssued!,
+        kind: 'issue',
+        refType: 'sale',
+        refId: sale._id,
+        note: noteTrim || 'Refund issued as store credit',
+        createdBy: req.user.id,
+      })
+    }
+
     await SaleRefund.create({
       saleId: sale._id,
       saleShortId: sale.saleId,
@@ -975,8 +1030,14 @@ export async function refundSale(req: Request, res: Response, next: NextFunction
       note: noteTrim || undefined,
       lines: refundLines,
       refundTotal,
-      refundCash: payoutMethodNorm === 'cash' ? refundTotal : 0,
-      refundCard: payoutMethodNorm === 'card' ? refundTotal : 0,
+      refundCash: refundCashAmt,
+      refundCard: refundCardAmt,
+      refundStoreCreditIssued:
+        refundStoreCreditIssued !== undefined && refundStoreCreditIssued > 0.005
+          ? refundStoreCreditIssued
+          : undefined,
+      storeCreditPhone:
+        refundStoreCreditIssued !== undefined && refundStoreCreditIssued > 0.005 ? refundIssuePhone : undefined,
       reversedStoreCredit: reverseSc > 0 ? reverseSc : undefined,
       reversedOnAccount: reverseOa > 0 ? reverseOa : undefined,
       refundedBy: new Types.ObjectId(String(req.user.id)),
@@ -999,6 +1060,13 @@ export async function refundSale(req: Request, res: Response, next: NextFunction
     res.status(200).json({
       message: sale.refundStatus === 'refunded' ? 'Sale fully refunded' : 'Sale partially refunded',
       sale: out ? { ...out, cashier: serializeCashier(out.cashier) } : null,
+      refundSettlement: {
+        refundTotal,
+        reversedStoreCredit: reverseSc,
+        reversedOnAccount: reverseOa,
+        netCashOrCardPaidOut: refundCashAmt + refundCardAmt,
+        storeCreditIssued: refundStoreCreditIssued ?? 0,
+      },
     })
   } catch (e) {
     next(e)

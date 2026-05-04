@@ -37,7 +37,7 @@ export interface IShiftSummary {
     saleId?: string
     cashierId?: Types.ObjectId
     cashierName?: string
-    method?: 'cash' | 'card'
+    method?: 'cash' | 'card' | 'store_credit'
     refundTotal: number
     refundCash: number
     refundCard: number
@@ -112,7 +112,7 @@ const summarySchema = new Schema<IShiftSummary>(
         saleId: { type: String, trim: true },
         cashierId: { type: Schema.Types.ObjectId, ref: 'User' },
         cashierName: { type: String, trim: true },
-        method: { type: String, enum: ['cash', 'card'] },
+        method: { type: String, enum: ['cash', 'card', 'store_credit'] },
         refundTotal: { type: Number, required: true, min: 0, default: 0 },
         refundCash: { type: Number, required: true, min: 0, default: 0 },
         refundCard: { type: Number, required: true, min: 0, default: 0 },
