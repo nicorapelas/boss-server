@@ -1,4 +1,5 @@
 import { Router, type RequestHandler } from 'express'
+import { requirePermission } from '../middleware/requirePermission.middleware.js'
 import {
   createProduct,
   deleteProduct,
@@ -7,12 +8,12 @@ import {
   updateProduct,
 } from '../controllers/products.controller.js'
 
-export function productsRouter(requireAuth: RequestHandler, requireAdmin: RequestHandler) {
+export function productsRouter(requireAuth: RequestHandler) {
   const r = Router()
-  r.get('/', requireAuth, listProducts)
-  r.get('/:id', requireAuth, getProduct)
-  r.post('/', requireAuth, requireAdmin, createProduct)
-  r.patch('/:id', requireAuth, requireAdmin, updateProduct)
-  r.delete('/:id', requireAuth, requireAdmin, deleteProduct)
+  r.get('/', requireAuth, requirePermission('catalog.read'), listProducts)
+  r.get('/:id', requireAuth, requirePermission('catalog.read'), getProduct)
+  r.post('/', requireAuth, requirePermission('catalog.write'), createProduct)
+  r.patch('/:id', requireAuth, requirePermission('catalog.write'), updateProduct)
+  r.delete('/:id', requireAuth, requirePermission('catalog.write'), deleteProduct)
   return r
 }

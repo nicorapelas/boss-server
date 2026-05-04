@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from 'express'
+import type { IRole } from '../models/Role.js'
 import { User } from '../models/User.js'
 import {
   AuthError,
@@ -27,7 +28,13 @@ export async function register(req: Request, res: Response, next: NextFunction) 
     const effectiveRole: 'admin' | 'cashier' =
       existingCount === 0 ? 'admin' : role === 'admin' ? 'cashier' : (role ?? 'cashier')
     const user = await registerUser(email, password, effectiveRole)
-    res.status(201).json({ id: user.id, email: user.email, role: user.role })
+    const r = user.roleId as unknown as IRole
+    res.status(201).json({
+      id: user.id,
+      email: user.email,
+      role: r.slug,
+      permissions: r.permissions,
+    })
   } catch (e) {
     next(e)
   }

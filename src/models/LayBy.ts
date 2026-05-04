@@ -16,6 +16,10 @@ export interface ILayByPayment {
   cashAmount: number
   cardAmount: number
   storeCreditAmount: number
+  /** Till where payment was recorded (POS), normalized uppercase. */
+  tillCode?: string
+  /** Shift session at time of payment (best-effort). */
+  shiftId?: Types.ObjectId | null
   createdAt: Date
   createdBy: Types.ObjectId
 }
@@ -69,6 +73,8 @@ const layByPaymentSchema = new Schema<ILayByPayment>(
     cashAmount: { type: Number, required: true, min: 0 },
     cardAmount: { type: Number, required: true, min: 0 },
     storeCreditAmount: { type: Number, default: 0, min: 0 },
+    tillCode: { type: String, trim: true, uppercase: true, index: true },
+    shiftId: { type: Schema.Types.ObjectId, ref: 'ShiftSession', default: null, sparse: true, index: true },
     createdAt: { type: Date, default: () => new Date() },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   },

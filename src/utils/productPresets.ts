@@ -1,4 +1,4 @@
-export const PRESET_ENTRY_MAX = 16
+export const PRESET_ENTRY_MAX = 200
 
 export type PresetEntry = {
   productId: string

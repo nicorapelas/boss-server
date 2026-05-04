@@ -1,7 +1,5 @@
-import mongoose, { Schema } from 'mongoose'
+import mongoose, { Schema, type Types } from 'mongoose'
 import bcrypt from 'bcryptjs'
-
-export type Role = 'admin' | 'cashier'
 
 export interface IUserLegacy {
   source: 'vector'
@@ -14,7 +12,7 @@ export interface IUser {
   email: string
   badgeCode?: string
   passwordHash: string
-  role: Role
+  roleId: Types.ObjectId
   displayName?: string
   active?: boolean
   legacy?: IUserLegacy
@@ -28,7 +26,7 @@ const userSchema = new Schema<IUser>(
     badgeCode: { type: String, unique: true, sparse: true, trim: true },
     passwordHash: { type: String, required: true },
     displayName: { type: String, trim: true },
-    role: { type: String, enum: ['admin', 'cashier'], default: 'cashier' },
+    roleId: { type: Schema.Types.ObjectId, ref: 'Role', required: true },
     active: { type: Boolean, default: true },
     legacy: {
       source: { type: String, enum: ['vector'] },

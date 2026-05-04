@@ -3,6 +3,8 @@ import { Types } from 'mongoose'
 import { Product } from '../models/Product.js'
 import { Quote } from '../models/Quote.js'
 import { StoreSettings } from '../models/StoreSettings.js'
+import { canChargeAboveCatalogPrice } from '../utils/requestAuth.js'
+import { expandForProduct, productHasVolumeTiering } from '../utils/volumePrice.js'
 import { vatAmountFromInclusive } from './layby.controller.js'
 
 function round2(n: number): number {
@@ -96,7 +98,6 @@ export async function createQuote(req: Request, res: Response, next: NextFunctio
     }
     const settings = await ensureSettings()
     const vatRate = settings.vatRate ?? 0.14
-    const role = req.user.role
 
     const normalized = body.items.map((row) => ({
       productId: row.productId,
@@ -131,30 +132,46 @@ export async function createQuote(req: Request, res: Response, next: NextFunctio
         return
       }
       const catalog = round2(p.price ?? 0)
-      let unitPrice = catalog
-      if (row.unitPrice !== undefined) {
-        const requested = round2(row.unitPrice)
-        if (!Number.isFinite(requested) || requested < 0) {
-          res.status(400).json({ message: 'Invalid unitPrice' })
-          return
-        }
-        if (requested > catalog && role !== 'admin') {
-          res.status(403).json({ message: 'Only admins may quote above the catalog price' })
-          return
-        }
-        unitPrice = requested
-      }
       const qty = row.quantity as number
-      const lineTotal = round2(unitPrice * qty)
-      lines.push({
-        productId: p._id,
-        name: p.name,
-        sku: p.sku,
-        quantity: qty,
-        unitPrice,
-        lineTotal,
-        listUnitPrice: unitPrice !== catalog ? catalog : undefined,
-      })
+      if (productHasVolumeTiering(p)) {
+        const segments = expandForProduct(p, qty)
+        const lineTotal = round2(segments.reduce((s, g) => s + g.lineTotal, 0))
+        const unitPrice = qty > 0 ? round2(lineTotal / qty) : catalog
+        const listUnitPrice = unitPrice < catalog - 0.0001 ? catalog : undefined
+        lines.push({
+          productId: p._id,
+          name: p.name,
+          sku: p.sku,
+          quantity: qty,
+          unitPrice,
+          lineTotal,
+          listUnitPrice,
+        })
+      } else {
+        let unitPrice = catalog
+        if (row.unitPrice !== undefined) {
+          const requested = round2(row.unitPrice)
+          if (!Number.isFinite(requested) || requested < 0) {
+            res.status(400).json({ message: 'Invalid unitPrice' })
+            return
+          }
+          if (requested > catalog && !canChargeAboveCatalogPrice(req.user)) {
+            res.status(403).json({ message: 'Not allowed to quote above the catalog price' })
+            return
+          }
+          unitPrice = requested
+        }
+        const lineTotal = round2(unitPrice * qty)
+        lines.push({
+          productId: p._id,
+          name: p.name,
+          sku: p.sku,
+          quantity: qty,
+          unitPrice,
+          lineTotal,
+          listUnitPrice: unitPrice !== catalog ? catalog : undefined,
+        })
+      }
     }
 
     const totalInclVat = round2(lines.reduce((s, l) => s + l.lineTotal, 0))

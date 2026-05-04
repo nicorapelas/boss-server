@@ -1,9 +1,15 @@
 import { Router, type RequestHandler } from 'express'
-import { listStoreCreditAccounts, listStoreCreditLedger } from '../controllers/storeCredit.controller.js'
+import { requirePermission } from '../middleware/requirePermission.middleware.js'
+import {
+  getStoreCreditBalance,
+  listStoreCreditAccounts,
+  listStoreCreditLedger,
+} from '../controllers/storeCredit.controller.js'
 
-export function storeCreditRouter(requireAuth: RequestHandler, requireAdmin: RequestHandler) {
+export function storeCreditRouter(requireAuth: RequestHandler) {
   const r = Router()
-  r.get('/accounts', requireAuth, requireAdmin, listStoreCreditAccounts)
-  r.get('/ledger', requireAuth, requireAdmin, listStoreCreditLedger)
+  r.get('/balance', requireAuth, requirePermission('sales.create'), getStoreCreditBalance)
+  r.get('/accounts', requireAuth, requirePermission('store_credit.access'), listStoreCreditAccounts)
+  r.get('/ledger', requireAuth, requirePermission('store_credit.access'), listStoreCreditLedger)
   return r
 }

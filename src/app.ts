@@ -33,6 +33,21 @@ export function createApp(options: {
   )
   app.use(express.json())
 
+  // Debug network/auth reachability from POS terminals without logging secrets.
+  app.use((req, _res, next) => {
+    if (req.path === '/api/auth/login' || req.path === '/api/auth/login-badge') {
+      const sourceIp = req.ip || req.socket.remoteAddress || 'unknown'
+      const origin = req.get('origin') ?? 'none'
+      const userAgent = req.get('user-agent') ?? 'unknown'
+      const bodyShape = req.body && typeof req.body === 'object' ? Object.keys(req.body as Record<string, unknown>) : []
+      const now = new Date().toISOString()
+      console.log(
+        `[auth-attempt] ${now} method=${req.method} path=${req.path} ip=${sourceIp} origin=${origin} bodyKeys=${bodyShape.join(',')} ua=${userAgent}`,
+      )
+    }
+    next()
+  })
+
   app.get('/health', (_req, res) => {
     res.json({ ok: true })
   })

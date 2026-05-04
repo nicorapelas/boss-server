@@ -2,10 +2,13 @@ import type { NextFunction, Request, Response } from 'express'
 import { Types } from 'mongoose'
 import { LayBy } from '../models/LayBy.js'
 import { Product } from '../models/Product.js'
+import { expandForProduct, productHasVolumeTiering } from '../utils/volumePrice.js'
 import { Sale } from '../models/Sale.js'
 import { StoreCreditAccount, StoreCreditLedger } from '../models/StoreCreditAccount.js'
 import { StoreSettings } from '../models/StoreSettings.js'
+import { canChargeAboveCatalogPrice, isRegisterManager } from '../utils/requestAuth.js'
 import { productTracksInventory } from '../utils/productInventory.js'
+import { getOrCreateOpenShift } from './shifts.controller.js'
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100
@@ -19,6 +22,13 @@ export function vatAmountFromInclusive(totalIncl: number, vatRate: number): numb
 
 export function normalizePhone(raw: string): string {
   return raw.replace(/\D/g, '')
+}
+
+function normalizeTillCode(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const v = raw.trim().toUpperCase()
+  if (!v || !/^[A-Z0-9_-]{1,24}$/.test(v)) return null
+  return v
 }
 
 async function getSettings() {
@@ -66,6 +76,7 @@ export async function createLayBy(req: Request, res: Response, next: NextFunctio
       depositPercentOverride?: number
       expiresAtOverride?: string
       firstPayment?: { cashAmount?: number; cardAmount?: number; storeCreditAmount?: number }
+      tillCode?: string
     }
     const customerName = body.customerName?.trim()
     const phoneNorm = body.phone ? normalizePhone(body.phone) : ''
@@ -79,12 +90,11 @@ export async function createLayBy(req: Request, res: Response, next: NextFunctio
     }
     const settings = await getSettings()
     const vatRate = settings.vatRate ?? 0.14
-    const role = req.user.role
 
     let depositPercent = settings.defaultDepositPercent ?? 30
     if (body.depositPercentOverride !== undefined) {
-      if (role !== 'admin') {
-        res.status(403).json({ message: 'Only admins may override the deposit percentage' })
+      if (!isRegisterManager(req.user)) {
+        res.status(403).json({ message: 'Manager permission required to override the deposit percentage' })
         return
       }
       const p = Number(body.depositPercentOverride)
@@ -97,8 +107,8 @@ export async function createLayBy(req: Request, res: Response, next: NextFunctio
 
     let expiresAt: Date
     if (body.expiresAtOverride !== undefined) {
-      if (role !== 'admin') {
-        res.status(403).json({ message: 'Only admins may override expiry' })
+      if (!isRegisterManager(req.user)) {
+        res.status(403).json({ message: 'Manager permission required to override expiry' })
         return
       }
       const d = new Date(body.expiresAtOverride)
@@ -147,41 +157,67 @@ export async function createLayBy(req: Request, res: Response, next: NextFunctio
         return
       }
       const catalog = round2(p.price ?? 0)
-      let unitPrice = catalog
-      if (row.unitPrice !== undefined) {
-        const requested = round2(row.unitPrice)
-        if (!Number.isFinite(requested) || requested < 0) {
-          res.status(400).json({ message: 'Invalid unitPrice' })
-          return
-        }
-        if (requested > catalog && role !== 'admin') {
-          res.status(403).json({ message: 'Only admins may charge above the catalog price' })
-          return
-        }
-        unitPrice = requested
-      }
       const qty = row.quantity as number
-      const lineTotal = round2(unitPrice * qty)
-      if (productTracksInventory(p)) {
-        const stock = p.stock ?? 0
-        const rsv = reserved.get(String(p._id)) ?? 0
-        const available = stock - rsv
-        if (available < qty) {
-          res.status(409).json({
-            message: `Insufficient available stock for ${p.sku} (lay-by reservations)`,
-          })
-          return
+      if (productHasVolumeTiering(p)) {
+        if (productTracksInventory(p)) {
+          const stock = p.stock ?? 0
+          const rsv = reserved.get(String(p._id)) ?? 0
+          const available = stock - rsv
+          if (available < qty) {
+            res.status(409).json({
+              message: `Insufficient available stock for ${p.sku} (lay-by reservations)`,
+            })
+            return
+          }
         }
+        const segments = expandForProduct(p, qty)
+        for (const seg of segments) {
+          lines.push({
+            productId: p._id,
+            name: p.name,
+            sku: p.sku,
+            quantity: seg.quantity,
+            unitPrice: seg.unitPrice,
+            lineTotal: seg.lineTotal,
+            listUnitPrice: seg.listUnitPrice,
+          })
+        }
+      } else {
+        let unitPrice = catalog
+        if (row.unitPrice !== undefined) {
+          const requested = round2(row.unitPrice)
+          if (!Number.isFinite(requested) || requested < 0) {
+            res.status(400).json({ message: 'Invalid unitPrice' })
+            return
+          }
+          if (requested > catalog && !canChargeAboveCatalogPrice(req.user)) {
+            res.status(403).json({ message: 'Not allowed to charge above the catalog price' })
+            return
+          }
+          unitPrice = requested
+        }
+        const lineTotal = round2(unitPrice * qty)
+        if (productTracksInventory(p)) {
+          const stock = p.stock ?? 0
+          const rsv = reserved.get(String(p._id)) ?? 0
+          const available = stock - rsv
+          if (available < qty) {
+            res.status(409).json({
+              message: `Insufficient available stock for ${p.sku} (lay-by reservations)`,
+            })
+            return
+          }
+        }
+        lines.push({
+          productId: p._id,
+          name: p.name,
+          sku: p.sku,
+          quantity: qty,
+          unitPrice,
+          lineTotal,
+          listUnitPrice: unitPrice !== catalog ? catalog : undefined,
+        })
       }
-      lines.push({
-        productId: p._id,
-        name: p.name,
-        sku: p.sku,
-        quantity: qty,
-        unitPrice,
-        lineTotal,
-        listUnitPrice: unitPrice !== catalog ? catalog : undefined,
-      })
     }
 
     const totalInclVat = round2(lines.reduce((s, l) => s + l.lineTotal, 0))
@@ -214,6 +250,13 @@ export async function createLayBy(req: Request, res: Response, next: NextFunctio
       }
     }
 
+    const tillCode = normalizeTillCode(body.tillCode)
+    if (body.tillCode != null && !tillCode) {
+      res.status(400).json({ message: 'Invalid tillCode (use letters, numbers, _, -; max 24)' })
+      return
+    }
+    const openShift = tillCode ? await getOrCreateOpenShift(tillCode, String(req.user.id)) : null
+
     const st = await StoreSettings.findOneAndUpdate(
       { _id: 'default' },
       { $inc: { nextLayBySeq: 1 } },
@@ -228,6 +271,8 @@ export async function createLayBy(req: Request, res: Response, next: NextFunctio
       cashAmount,
       cardAmount,
       storeCreditAmount,
+      tillCode: tillCode || undefined,
+      shiftId: openShift?._id ?? undefined,
       createdAt: new Date(),
       createdBy: new Types.ObjectId(String(req.user.id)),
     }
@@ -325,7 +370,7 @@ export async function addLayByPayment(req: Request, res: Response, next: NextFun
       res.status(404).json({ message: 'Active lay-by not found' })
       return
     }
-    const body = req.body as { cashAmount?: number; cardAmount?: number; storeCreditAmount?: number }
+    const body = req.body as { cashAmount?: number; cardAmount?: number; storeCreditAmount?: number; tillCode?: string }
     const tenderCash = round2(Math.max(0, Number(body.cashAmount ?? 0) || 0))
     const tenderCard = round2(Math.max(0, Number(body.cardAmount ?? 0) || 0))
     const tenderSc = round2(Math.max(0, Number(body.storeCreditAmount ?? 0) || 0))
@@ -334,6 +379,13 @@ export async function addLayByPayment(req: Request, res: Response, next: NextFun
       res.status(400).json({ message: 'Payment amount required' })
       return
     }
+
+    const tillCode = normalizeTillCode(body.tillCode)
+    if (body.tillCode != null && !tillCode) {
+      res.status(400).json({ message: 'Invalid tillCode (use letters, numbers, _, -; max 24)' })
+      return
+    }
+    const openShift = tillCode ? await getOrCreateOpenShift(tillCode, String(req.user.id)) : null
 
     const balanceDue = round2(lb.balance)
     if (balanceDue < 0.01) {
@@ -384,6 +436,8 @@ export async function addLayByPayment(req: Request, res: Response, next: NextFun
       cashAmount: cashApplied,
       cardAmount: cardApplied,
       storeCreditAmount: scApplied,
+      tillCode: tillCode || undefined,
+      shiftId: openShift?._id ?? undefined,
       createdAt: new Date(),
       createdBy: new Types.ObjectId(String(req.user.id)),
     })
@@ -393,6 +447,11 @@ export async function addLayByPayment(req: Request, res: Response, next: NextFun
     await lb.save()
 
     const changeDue = round2(Math.max(0, tenderCash - cashApplied))
+
+    // Auto-complete when the final payment clears the balance.
+    if (lb.balance <= 0.02) {
+      await completeLayByInternal(String(lb._id), req.user.id, tillCode || undefined)
+    }
 
     const out = await LayBy.findById(lb._id).lean()
     res.json({
@@ -409,7 +468,7 @@ export async function addLayByPayment(req: Request, res: Response, next: NextFun
   }
 }
 
-async function completeLayByInternal(layById: string, userId: string) {
+async function completeLayByInternal(layById: string, userId: string, tillCode?: string) {
   const lb = await LayBy.findById(layById)
   if (!lb || lb.status !== 'active') return
   if (lb.balance > 0.02) return
@@ -468,6 +527,7 @@ async function completeLayByInternal(layById: string, userId: string) {
   }
 
   const total = round2(lines.reduce((s, l) => s + l.lineTotal, 0))
+  const openShift = tillCode ? await getOrCreateOpenShift(tillCode, userId) : null
   const sale = await Sale.create({
     cashier: userId,
     items: lines,
@@ -475,6 +535,8 @@ async function completeLayByInternal(layById: string, userId: string) {
     paymentMethod: 'layby_complete',
     payment: { cashAmount: 0, cardAmount: 0 },
     layById: lb._id,
+    tillCode: tillCode || undefined,
+    shiftId: openShift?._id ?? undefined,
   })
 
   lb.status = 'completed'
@@ -498,28 +560,19 @@ export async function completeLayBy(req: Request, res: Response, next: NextFunct
       res.status(400).json({ message: 'Balance must be cleared before completion' })
       return
     }
+    const tillCode = normalizeTillCode((req.body ?? {}).tillCode)
+    if ((req.body ?? {}).tillCode != null && !tillCode) {
+      res.status(400).json({ message: 'Invalid tillCode (use letters, numbers, _, -; max 24)' })
+      return
+    }
     try {
-      await completeLayByInternal(String(lb._id), req.user.id)
+      await completeLayByInternal(String(lb._id), req.user.id, tillCode || undefined)
     } catch (err) {
       res.status(409).json({ message: err instanceof Error ? err.message : 'Completion failed' })
       return
     }
     const out = await LayBy.findById(lb._id).lean()
     res.json(out)
-  } catch (e) {
-    next(e)
-  }
-}
-
-export async function getStoreCreditBalance(req: Request, res: Response, next: NextFunction) {
-  try {
-    const phone = normalizePhone(String(req.query.phone ?? ''))
-    if (!phone) {
-      res.status(400).json({ message: 'phone query required' })
-      return
-    }
-    const acct = await StoreCreditAccount.findOne({ phone }).lean()
-    res.json({ balance: acct?.balance ?? 0, name: acct?.name ?? '' })
   } catch (e) {
     next(e)
   }

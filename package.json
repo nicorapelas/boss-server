@@ -4,7 +4,8 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "dev": "NODE_ENV=development tsx watch src/index.ts",
+    "dev": "bash scripts/dev-persistent.sh",
+    "dev:watch": "NODE_ENV=development tsx watch src/index.ts",
     "dev:local": "NODE_ENV=development tsx scripts/dev-with-mongo.ts",
     "dev:persistent": "bash scripts/dev-persistent.sh",
     "migrate:vector:items": "NODE_ENV=development tsx scripts/migrate-vector-items.ts",

@@ -34,9 +34,21 @@ export interface IProductLegacy {
   textReference?: string
 }
 
+export interface IProductVolumeTier {
+  minQty: number
+  maxQty: number | null
+  unitPrice: number
+}
+
 export interface IProduct {
   name: string
   sku: string
+  category?: string | null
+  /** Optional finer grouping under `category` (BackOffice catalog + API). */
+  subCategory?: string | null
+  /** Line quantity picks one tier; that unit price applies to the whole line. See `utils/volumePrice`. */
+  volumeTieringEnabled?: boolean
+  volumeTiers?: IProductVolumeTier[]
   barcode?: string | null
   longName?: string | null
   price: number
@@ -56,6 +68,19 @@ const productSchema = new Schema<IProduct>(
   {
     name: { type: String, required: true, trim: true },
     sku: { type: String, required: true, unique: true, trim: true },
+    category: { type: String, trim: true, default: null, index: true },
+    subCategory: { type: String, trim: true, default: null, index: true },
+    volumeTieringEnabled: { type: Boolean, default: false },
+    volumeTiers: {
+      type: [
+        {
+          minQty: { type: Number, required: true, min: 1 },
+          maxQty: { type: Number, min: 1, default: null },
+          unitPrice: { type: Number, required: true, min: 0 },
+        },
+      ],
+      default: [],
+    },
     barcode: { type: String, trim: true, index: true, sparse: true },
     longName: { type: String, trim: true, default: null },
     price: { type: Number, required: true, min: 0, default: 0 },

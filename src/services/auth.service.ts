@@ -1,4 +1,6 @@
 import bcrypt from 'bcryptjs'
+import type { IRole } from '../models/Role.js'
+import { Role } from '../models/Role.js'
 import { User, hashPassword } from '../models/User.js'
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/jwt.js'
 import { hashToken } from '../utils/tokenHash.js'
@@ -11,9 +13,20 @@ export class AuthError extends Error {
   }
 }
 
-export async function registerUser(email: string, password: string, role: 'admin' | 'cashier' = 'cashier') {
+function roleFromUser(user: { roleId: unknown }): IRole {
+  const r = user.roleId as IRole | null
+  if (!r || typeof r !== 'object' || !('slug' in r)) {
+    throw new AuthError(500, 'User role not loaded')
+  }
+  return r
+}
+
+export async function registerUser(email: string, password: string, roleSlug: 'admin' | 'cashier' = 'cashier') {
+  const role = await Role.findOne({ slug: roleSlug })
+  if (!role) throw new AuthError(500, 'Roles not bootstrapped')
   const passwordHash = await hashPassword(password)
-  const user = await User.create({ email, passwordHash, role })
+  const user = await User.create({ email, passwordHash, roleId: role._id })
+  await user.populate<{ roleId: IRole }>('roleId')
   return user
 }
 
@@ -23,12 +36,13 @@ export async function loginUser(
   accessSecret: string,
   refreshSecret: string,
 ) {
-  const user = await User.findOne({ email: email.toLowerCase() })
+  const user = await User.findOne({ email: email.toLowerCase() }).populate<{ roleId: IRole }>('roleId')
   if (!user) throw new AuthError(401, 'Invalid credentials')
-  assertUserLoginAllowed(user.active, user.role, user.legacy?.source, user.legacy?.canLogin)
+  const r = roleFromUser(user)
+  assertUserLoginAllowed(user.active, r.slug, user.legacy?.source, user.legacy?.canLogin)
   const ok = await bcrypt.compare(password, user.passwordHash)
   if (!ok) throw new AuthError(401, 'Invalid credentials')
-  return createSessionForUser(user, accessSecret, refreshSecret)
+  return createSessionForUser(user, r, accessSecret, refreshSecret)
 }
 
 export async function loginByBadge(
@@ -40,10 +54,11 @@ export async function loginByBadge(
   if (!normalized) throw new AuthError(400, 'badgeCode required')
   const user = await User.findOne({
     $or: [{ badgeCode: normalized }, { email: normalized.toLowerCase() }],
-  })
+  }).populate<{ roleId: IRole }>('roleId')
   if (!user) throw new AuthError(401, 'Invalid badge')
-  assertUserLoginAllowed(user.active, user.role, user.legacy?.source, user.legacy?.canLogin)
-  return createSessionForUser(user, accessSecret, refreshSecret)
+  const r = roleFromUser(user)
+  assertUserLoginAllowed(user.active, r.slug, user.legacy?.source, user.legacy?.canLogin)
+  return createSessionForUser(user, r, accessSecret, refreshSecret)
 }
 
 export async function refreshSession(refreshToken: string, accessSecret: string, refreshSecret: string) {
@@ -54,7 +69,7 @@ export async function refreshSession(refreshToken: string, accessSecret: string,
     throw new AuthError(401, 'Invalid refresh token')
   }
 
-  const user = await User.findById(payload.sub)
+  const user = await User.findById(payload.sub).populate<{ roleId: IRole }>('roleId')
   if (!user?.refreshTokenHash || !user.refreshTokenExpires) {
     throw new AuthError(401, 'Session expired')
   }
@@ -64,8 +79,14 @@ export async function refreshSession(refreshToken: string, accessSecret: string,
   const matches = user.refreshTokenHash === hashToken(refreshToken)
   if (!matches) throw new AuthError(401, 'Invalid refresh token')
 
+  const r = roleFromUser(user)
   const accessToken = signAccessToken(
-    { id: user.id, email: user.email, role: user.role },
+    {
+      id: user.id,
+      email: user.email,
+      role: r.slug,
+      permissions: r.permissions,
+    },
     accessSecret,
   )
   const newRefresh = signRefreshToken(user.id, refreshSecret)
@@ -76,7 +97,13 @@ export async function refreshSession(refreshToken: string, accessSecret: string,
   return {
     accessToken,
     refreshToken: newRefresh,
-    user: { id: user.id, email: user.email, role: user.role },
+    user: {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      role: r.slug,
+      permissions: r.permissions,
+    },
   }
 }
 
@@ -89,12 +116,12 @@ export async function logoutUser(userId: string) {
 
 function assertUserLoginAllowed(
   active: boolean | undefined,
-  role: 'admin' | 'cashier',
+  roleSlug: string,
   source: 'vector' | undefined,
   canLogin: boolean | undefined,
 ) {
   if (active === false) throw new AuthError(403, 'User account is disabled')
-  if (role !== 'admin' && source === 'vector' && canLogin === false) {
+  if (roleSlug !== 'admin' && source === 'vector' && canLogin === false) {
     throw new AuthError(403, 'User login is locked. Ask admin to unlock.')
   }
 }
@@ -104,11 +131,12 @@ async function createSessionForUser(
     id?: string
     _id?: { toString: () => string } | string
     email: string
-    role: 'admin' | 'cashier'
+    displayName?: string | null
     refreshTokenHash?: string | null
     refreshTokenExpires?: Date | null
     save: () => Promise<unknown>
   },
+  role: IRole,
   accessSecret: string,
   refreshSecret: string,
 ) {
@@ -117,7 +145,12 @@ async function createSessionForUser(
     throw new AuthError(500, 'User id missing')
   }
   const accessToken = signAccessToken(
-    { id: userId, email: user.email, role: user.role },
+    {
+      id: userId,
+      email: user.email,
+      role: role.slug,
+      permissions: role.permissions,
+    },
     accessSecret,
   )
   const refreshToken = signRefreshToken(userId, refreshSecret)
@@ -128,6 +161,12 @@ async function createSessionForUser(
   return {
     accessToken,
     refreshToken,
-    user: { id: userId, email: user.email, role: user.role },
+    user: {
+      id: userId,
+      email: user.email,
+      displayName: user.displayName ?? undefined,
+      role: role.slug,
+      permissions: role.permissions,
+    },
   }
 }

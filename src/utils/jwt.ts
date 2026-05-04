@@ -1,11 +1,17 @@
 import jwt, { type SignOptions } from 'jsonwebtoken'
-import type { Role } from '../models/User.js'
 
-export type AccessPayload = { sub: string; email: string; role: Role; typ: 'access' }
+export type AccessPayload = {
+  sub: string
+  email: string
+  /** Role slug, e.g. admin, cashier */
+  role: string
+  permissions: string[]
+  typ: 'access'
+}
 export type RefreshPayload = { sub: string; typ: 'refresh'; ver: number }
 
 export function signAccessToken(
-  user: { id: string; email: string; role: Role },
+  user: { id: string; email: string; role: string; permissions: string[] },
   secret: string,
   expiresIn: SignOptions['expiresIn'] = '15m',
 ) {
@@ -13,6 +19,7 @@ export function signAccessToken(
     sub: user.id,
     email: user.email,
     role: user.role,
+    permissions: user.permissions,
     typ: 'access',
   }
   const options: SignOptions = { expiresIn }

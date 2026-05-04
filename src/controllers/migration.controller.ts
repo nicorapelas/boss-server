@@ -67,7 +67,8 @@ export async function migrationAudit(_req: Request, res: Response, next: NextFun
       User.find({ 'legacy.source': 'vector', 'legacy.canLogin': false })
         .sort({ 'legacy.userNo': 1 })
         .limit(100)
-        .select('email displayName role legacy')
+        .populate('roleId', 'slug name')
+        .select('email displayName roleId legacy')
         .lean(),
     ])
 

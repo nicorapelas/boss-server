@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express'
 import { reservedQtyByProduct } from './layby.controller.js'
 import { Product } from '../models/Product.js'
 import { productTracksInventory } from '../utils/productInventory.js'
+import { validateVolumeTiers } from '../utils/volumePrice.js'
 
 export async function listProducts(_req: Request, res: Response, next: NextFunction) {
   try {
@@ -78,25 +79,41 @@ export async function getProduct(req: Request, res: Response, next: NextFunction
 
 export async function createProduct(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, sku, barcode, price, stock, trackInventory } = req.body as {
+    const { name, sku, category, subCategory, barcode, price, stock, trackInventory, volumeTieringEnabled, volumeTiers } = req.body as {
       name?: string
       sku?: string
+      category?: string | null
+      subCategory?: string | null
       barcode?: string | null
       price?: number
       stock?: number
       trackInventory?: boolean
+      volumeTieringEnabled?: boolean
+      volumeTiers?: unknown
     }
     if (!name || !sku || price === undefined) {
       res.status(400).json({ message: 'name, sku, and price required' })
       return
     }
+    const vol = Boolean(volumeTieringEnabled)
+    const v = validateVolumeTiers(Number(price), vol, volumeTiers)
+    if (!v.ok) {
+      res.status(400).json({ message: v.message })
+      return
+    }
+    const cat = category?.trim() ? category.trim() : null
+    const sub = cat && subCategory?.trim() ? subCategory.trim() : null
     const product = await Product.create({
       name,
       sku,
+      category: cat,
+      subCategory: sub,
       barcode: barcode ?? null,
       price,
       stock: stock ?? 0,
       trackInventory: trackInventory !== false,
+      volumeTieringEnabled: vol,
+      volumeTiers: v.tiers,
     })
     res.status(201).json(product)
   } catch (e) {
@@ -106,17 +123,30 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
 
 export async function updateProduct(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, sku, barcode, price, stock, trackInventory } = req.body as {
+    const { name, sku, category, subCategory, barcode, price, stock, trackInventory, volumeTieringEnabled, volumeTiers } = req.body as {
       name?: string
       sku?: string
+      category?: string | null
+      subCategory?: string | null
       barcode?: string | null
       price?: number
       stock?: number
       trackInventory?: boolean
+      volumeTieringEnabled?: boolean
+      volumeTiers?: unknown
     }
     const $set: Record<string, unknown> = {}
     if (name !== undefined) $set.name = name
     if (sku !== undefined) $set.sku = sku
+    const catIn = category !== undefined ? (category?.trim() ? category.trim() : null) : undefined
+    const subIn = subCategory !== undefined ? (subCategory?.trim() ? subCategory.trim() : null) : undefined
+    if (catIn !== undefined) {
+      $set.category = catIn
+      if (!catIn) $set.subCategory = null
+    }
+    if (subIn !== undefined && !(catIn !== undefined && !catIn)) {
+      $set.subCategory = subIn
+    }
     if (barcode !== undefined) $set.barcode = barcode
     if (price !== undefined) $set.price = price
     if (stock !== undefined) $set.stock = stock
@@ -124,6 +154,30 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
     if (Object.keys($set).length === 0) {
       res.status(400).json({ message: 'No fields to update' })
       return
+    }
+    if (
+      price !== undefined ||
+      volumeTieringEnabled !== undefined ||
+      volumeTiers !== undefined
+    ) {
+      const existing = await Product.findById(req.params.id).lean()
+      if (!existing) {
+        res.status(404).json({ message: 'Product not found' })
+        return
+      }
+      const nextPrice = price !== undefined ? Number(price) : existing.price ?? 0
+      const nextVol =
+        volumeTieringEnabled !== undefined
+          ? Boolean(volumeTieringEnabled)
+          : Boolean(existing.volumeTieringEnabled)
+      const nextTiersRaw = volumeTiers !== undefined ? volumeTiers : existing.volumeTiers
+      const v = validateVolumeTiers(nextPrice, nextVol, nextTiersRaw)
+      if (!v.ok) {
+        res.status(400).json({ message: v.message })
+        return
+      }
+      $set.volumeTieringEnabled = nextVol
+      $set.volumeTiers = v.tiers
     }
     const product = await Product.findByIdAndUpdate(req.params.id, { $set }, { new: true, runValidators: true })
     if (!product) {

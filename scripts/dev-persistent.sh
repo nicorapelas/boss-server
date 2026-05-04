@@ -50,6 +50,22 @@ if [ "${READY}" -ne 1 ]; then
 fi
 
 echo "[dev:persistent] Mongo ready on mongodb://127.0.0.1:27017/electropos"
+
+PORT="${PORT:-4000}"
+EXISTING_PIDS="$(lsof -tiTCP:${PORT} -sTCP:LISTEN 2>/dev/null || true)"
+if [ -n "${EXISTING_PIDS}" ]; then
+  echo "[dev:persistent] Port ${PORT} already in use. Stopping old process(es): ${EXISTING_PIDS}"
+  # shellcheck disable=SC2086
+  kill ${EXISTING_PIDS} >/dev/null 2>&1 || true
+  sleep 1
+  REMAINING_PIDS="$(lsof -tiTCP:${PORT} -sTCP:LISTEN 2>/dev/null || true)"
+  if [ -n "${REMAINING_PIDS}" ]; then
+    echo "[dev:persistent] Forcing stop for process(es): ${REMAINING_PIDS}"
+    # shellcheck disable=SC2086
+    kill -9 ${REMAINING_PIDS} >/dev/null 2>&1 || true
+  fi
+fi
+
 echo "[dev:persistent] Starting API server..."
 NODE_ENV=development npx tsx watch src/index.ts
 
