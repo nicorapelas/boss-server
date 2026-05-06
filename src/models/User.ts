@@ -15,6 +15,7 @@ export interface IUser {
   roleId: Types.ObjectId
   displayName?: string
   active?: boolean
+  allowOfflineLogin?: boolean
   legacy?: IUserLegacy
   refreshTokenHash?: string | null
   refreshTokenExpires?: Date | null
@@ -28,6 +29,7 @@ const userSchema = new Schema<IUser>(
     displayName: { type: String, trim: true },
     roleId: { type: Schema.Types.ObjectId, ref: 'Role', required: true },
     active: { type: Boolean, default: true },
+    allowOfflineLogin: { type: Boolean, default: false },
     legacy: {
       source: { type: String, enum: ['vector'] },
       userNo: { type: Number },

@@ -9,6 +9,7 @@ type PopulatedUser = {
   displayName?: string
   badgeCode?: string
   active?: boolean
+  allowOfflineLogin?: boolean
   legacy?: unknown
   createdAt?: Date
   updatedAt?: Date
@@ -24,6 +25,7 @@ function serializeUser(u: PopulatedUser) {
       displayName: u.displayName,
       badgeCode: u.badgeCode,
       active: u.active,
+      allowOfflineLogin: u.allowOfflineLogin,
       legacy: u.legacy,
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
@@ -40,6 +42,7 @@ function serializeUser(u: PopulatedUser) {
     displayName: u.displayName,
     badgeCode: u.badgeCode,
     active: u.active,
+    allowOfflineLogin: u.allowOfflineLogin,
     legacy: u.legacy,
     createdAt: u.createdAt,
     updatedAt: u.updatedAt,
@@ -66,13 +69,14 @@ export async function listUsers(_req: Request, res: Response, next: NextFunction
 
 export async function createUser(req: Request, res: Response, next: NextFunction) {
   try {
-    const { email, password, roleId, displayName, badgeCode, active } = req.body as {
+    const { email, password, roleId, displayName, badgeCode, active, allowOfflineLogin } = req.body as {
       email?: string
       password?: string
       roleId?: string
       displayName?: string
       badgeCode?: string
       active?: boolean
+      allowOfflineLogin?: boolean
     }
 
     if (!email || !password) {
@@ -108,6 +112,7 @@ export async function createUser(req: Request, res: Response, next: NextFunction
       displayName: displayName?.trim() || undefined,
       badgeCode: badgeCode?.trim() || undefined,
       active: active ?? true,
+      allowOfflineLogin: allowOfflineLogin ?? false,
     })
 
     const safeUser = await User.findById(user._id)
@@ -126,13 +131,14 @@ export async function createUser(req: Request, res: Response, next: NextFunction
 
 export async function updateUser(req: Request, res: Response, next: NextFunction) {
   try {
-    const { roleId, active, canLogin, badgeCode, email, displayName } = req.body as {
+    const { roleId, active, canLogin, badgeCode, email, displayName, allowOfflineLogin } = req.body as {
       roleId?: string
       active?: boolean
       canLogin?: boolean
       badgeCode?: string
       email?: string
       displayName?: string
+      allowOfflineLogin?: boolean
     }
 
     const $set: Record<string, unknown> = {}
@@ -146,6 +152,7 @@ export async function updateUser(req: Request, res: Response, next: NextFunction
       $set.roleId = role._id
     }
     if (active !== undefined) $set.active = active
+    if (allowOfflineLogin !== undefined) $set.allowOfflineLogin = allowOfflineLogin
     if (canLogin !== undefined) $set['legacy.canLogin'] = canLogin
     if (email !== undefined) $set.email = email.toLowerCase().trim()
     if (displayName !== undefined) {

@@ -109,3 +109,40 @@ export async function logout(req: Request, res: Response, next: NextFunction) {
     next(e)
   }
 }
+
+export async function getOfflineLoginPack(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const users = await User.find({
+      allowOfflineLogin: true,
+      active: { $ne: false },
+      $or: [{ 'legacy.source': { $ne: 'vector' } }, { 'legacy.canLogin': { $ne: false } }],
+    })
+      .populate<{ roleId: IRole }>('roleId')
+      .select('email displayName badgeCode passwordHash allowOfflineLogin active legacy roleId updatedAt')
+      .lean()
+
+    const payload = users
+      .map((u) => {
+        const role = u.roleId as IRole | null
+        if (!role || typeof role !== 'object' || !('slug' in role)) return null
+        return {
+          user: {
+            id: String(u._id),
+            email: u.email,
+            displayName: u.displayName,
+            role: role.slug,
+            permissions: role.permissions,
+            allowOfflineLogin: Boolean(u.allowOfflineLogin),
+          },
+          email: u.email,
+          badgeCode: u.badgeCode ?? null,
+          passwordHash: u.passwordHash,
+        }
+      })
+      .filter(Boolean)
+
+    res.json({ users: payload })
+  } catch (e) {
+    next(e)
+  }
+}

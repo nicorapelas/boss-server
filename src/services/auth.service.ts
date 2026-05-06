@@ -25,7 +25,7 @@ export async function registerUser(email: string, password: string, roleSlug: 'a
   const role = await Role.findOne({ slug: roleSlug })
   if (!role) throw new AuthError(500, 'Roles not bootstrapped')
   const passwordHash = await hashPassword(password)
-  const user = await User.create({ email, passwordHash, roleId: role._id })
+  const user = await User.create({ email, passwordHash, roleId: role._id, allowOfflineLogin: false })
   await user.populate<{ roleId: IRole }>('roleId')
   return user
 }
@@ -103,6 +103,7 @@ export async function refreshSession(refreshToken: string, accessSecret: string,
       displayName: user.displayName,
       role: r.slug,
       permissions: r.permissions,
+      allowOfflineLogin: Boolean((user as { allowOfflineLogin?: boolean }).allowOfflineLogin),
     },
   }
 }
@@ -167,6 +168,7 @@ async function createSessionForUser(
       displayName: user.displayName ?? undefined,
       role: role.slug,
       permissions: role.permissions,
+      allowOfflineLogin: Boolean((user as { allowOfflineLogin?: boolean }).allowOfflineLogin),
     },
   }
 }
