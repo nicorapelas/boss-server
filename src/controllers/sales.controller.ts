@@ -6,9 +6,11 @@ import { OpenTab } from '../models/OpenTab.js'
 import { Product } from '../models/Product.js'
 import { Quote } from '../models/Quote.js'
 import { HouseAccount, HouseAccountLedger } from '../models/HouseAccount.js'
+import { OfflineSyncConflict } from '../models/OfflineSyncConflict.js'
 import { Sale } from '../models/Sale.js'
 import { SaleRefund } from '../models/SaleRefund.js'
 import { StoreCreditAccount, StoreCreditLedger } from '../models/StoreCreditAccount.js'
+import { hasPermission } from '../permissions/catalog.js'
 import { getOrCreateOpenShift } from './shifts.controller.js'
 import { canChargeAboveCatalogPrice } from '../utils/requestAuth.js'
 import { productTracksInventory } from '../utils/productInventory.js'
@@ -35,6 +37,7 @@ function escapeRegex(s: string): string {
 }
 
 const SALE_ID_HEX_LEN = 10
+const MANAGER_STOCK_OVERRIDE_MAX_UNITS = 3
 
 function isObjectId24(s: string): boolean {
   return s.length === 24 && Types.ObjectId.isValid(s)
@@ -98,6 +101,16 @@ function buildSaleListFilter(query: Request['query']): { filter: Record<string, 
       ],
     })
   }
+  const stockOverride = typeof query.stockOverride === 'string' ? query.stockOverride.trim().toLowerCase() : ''
+  if (stockOverride === 'yes') conditions.push({ 'items.stockOverrideApproved': true })
+  if (stockOverride === 'no') {
+    conditions.push({
+      $or: [
+        { 'items.stockOverrideApproved': { $exists: false } },
+        { items: { $not: { $elemMatch: { stockOverrideApproved: true } } } },
+      ],
+    })
+  }
 
   const qRaw = typeof query.q === 'string' ? query.q.trim() : ''
   if (qRaw) {
@@ -128,7 +141,15 @@ function buildSaleListFilter(query: Request['query']): { filter: Record<string, 
   return { filter }
 }
 
-type BodyItem = { productId?: string; quantity?: number; unitPrice?: number; listUnitPrice?: number }
+type BodyItem = {
+  productId?: string
+  quantity?: number
+  unitPrice?: number
+  listUnitPrice?: number
+  stockOverrideApproved?: boolean
+  stockOverrideScope?: 'offline' | 'online'
+  stockOverrideAvailableQty?: number
+}
 type BodyPayment = {
   cashAmount?: number
   cardAmount?: number
@@ -209,6 +230,9 @@ export async function createSale(req: Request, res: Response, next: NextFunction
       quantity: number
       unitPrice: number
       listUnitPrice?: number
+      stockOverrideApproved?: boolean
+      stockOverrideScope?: 'offline' | 'online'
+      stockOverrideAvailableQty?: number
       lineTotal: number
       sku?: string
     }[] = []
@@ -218,12 +242,23 @@ export async function createSale(req: Request, res: Response, next: NextFunction
     // - read all products
     // - attempt conditional decrements (stock >= qty) in order
     // - if any decrement fails, roll back prior decrements
-    const normalized = items.map((row) => ({
-      productId: row.productId,
-      quantity: row.quantity,
-      unitPrice: row.unitPrice !== undefined ? Number(row.unitPrice) : undefined,
-      listUnitPrice: row.listUnitPrice !== undefined ? Number(row.listUnitPrice) : undefined,
-    }))
+    const normalized = items.map((row) => {
+      const stockOverrideScope: 'offline' | 'online' | undefined =
+        row.stockOverrideScope === 'offline' ? 'offline' : row.stockOverrideScope === 'online' ? 'online' : undefined
+      return {
+        productId: row.productId,
+        quantity: row.quantity,
+        unitPrice: row.unitPrice !== undefined ? Number(row.unitPrice) : undefined,
+        listUnitPrice: row.listUnitPrice !== undefined ? Number(row.listUnitPrice) : undefined,
+        stockOverrideApproved: row.stockOverrideApproved === true,
+        stockOverrideScope,
+        stockOverrideAvailableQty:
+          row.stockOverrideAvailableQty !== undefined && Number.isFinite(Number(row.stockOverrideAvailableQty))
+            ? round2(Math.max(0, Number(row.stockOverrideAvailableQty)))
+            : undefined,
+      }
+    })
+    const canManagerOverrideStock = hasPermission(req.user.permissions, req.user.role, 'register.manager')
     for (const row of normalized) {
       if (!row.productId || !row.quantity || row.quantity < 1) {
         res.status(400).json({ message: 'Each item needs productId and quantity >= 1' })
@@ -262,7 +297,9 @@ export async function createSale(req: Request, res: Response, next: NextFunction
           return
         }
       }
-      for (const qLine of quote.lines) {
+      for (let i = 0; i < quote.lines.length; i++) {
+        const qLine = quote.lines[i]
+        const row = normalized[i]
         const p = byId.get(String(qLine.productId))
         if (!p) {
           res.status(400).json({ message: `Unknown product ${String(qLine.productId)}` })
@@ -271,7 +308,12 @@ export async function createSale(req: Request, res: Response, next: NextFunction
         if (productTracksInventory(p)) {
           const rsv = reserved.get(String(p._id)) ?? 0
           const available = (p.stock ?? 0) - rsv
-          if (available < qLine.quantity) {
+          const wantsOverride = row?.stockOverrideApproved === true
+          const canUseOverride =
+            wantsOverride &&
+            canManagerOverrideStock &&
+            qLine.quantity <= available + MANAGER_STOCK_OVERRIDE_MAX_UNITS
+          if (available < qLine.quantity && !canUseOverride) {
             res.status(409).json({ message: `Insufficient stock for ${p.sku}` })
             return
           }
@@ -282,6 +324,9 @@ export async function createSale(req: Request, res: Response, next: NextFunction
           name: qLine.name,
           quantity: qLine.quantity,
           unitPrice: qLine.unitPrice,
+          stockOverrideApproved: row?.stockOverrideApproved === true,
+          stockOverrideScope: row?.stockOverrideApproved === true ? row.stockOverrideScope : undefined,
+          stockOverrideAvailableQty: row?.stockOverrideApproved === true ? row.stockOverrideAvailableQty : undefined,
           listUnitPrice:
             qLine.listUnitPrice !== undefined && Math.abs(qLine.listUnitPrice - qLine.unitPrice) > 0.0001
               ? qLine.listUnitPrice
@@ -304,7 +349,12 @@ export async function createSale(req: Request, res: Response, next: NextFunction
         if (productTracksInventory(p)) {
           const rsv = reserved.get(String(p._id)) ?? 0
           const available = (p.stock ?? 0) - rsv
-          if (available < (row.quantity as number)) {
+          const wantsOverride = row.stockOverrideApproved === true
+          const canUseOverride =
+            wantsOverride &&
+            canManagerOverrideStock &&
+            (row.quantity as number) <= available + MANAGER_STOCK_OVERRIDE_MAX_UNITS
+          if (available < (row.quantity as number) && !canUseOverride) {
             res.status(409).json({ message: `Insufficient stock for ${p.sku}` })
             return
           }
@@ -320,6 +370,9 @@ export async function createSale(req: Request, res: Response, next: NextFunction
               name: p.name,
               quantity: seg.quantity,
               unitPrice: seg.unitPrice,
+            stockOverrideApproved: row.stockOverrideApproved === true,
+            stockOverrideScope: row.stockOverrideApproved === true ? row.stockOverrideScope : undefined,
+            stockOverrideAvailableQty: row.stockOverrideApproved === true ? row.stockOverrideAvailableQty : undefined,
               listUnitPrice:
                 seg.listUnitPrice !== undefined && Math.abs(seg.listUnitPrice - seg.unitPrice) > 0.0001
                   ? seg.listUnitPrice
@@ -353,6 +406,9 @@ export async function createSale(req: Request, res: Response, next: NextFunction
             quantity: qty,
             unitPrice,
             listUnitPrice: Math.abs(listUnitPrice - unitPrice) > 0.0001 ? listUnitPrice : undefined,
+            stockOverrideApproved: row.stockOverrideApproved === true,
+            stockOverrideScope: row.stockOverrideApproved === true ? row.stockOverrideScope : undefined,
+            stockOverrideAvailableQty: row.stockOverrideApproved === true ? row.stockOverrideAvailableQty : undefined,
             lineTotal,
           })
         }
@@ -456,8 +512,11 @@ export async function createSale(req: Request, res: Response, next: NextFunction
           const qty = row.quantity as number
           const prod = byId.get(row.productId as string)
           if (!productTracksInventory(prod)) continue
+          const allowManagerOverride =
+            row.stockOverrideApproved === true && canManagerOverrideStock && qty >= 1 && Number.isFinite(qty)
+          const minRequiredStock = allowManagerOverride ? qty - MANAGER_STOCK_OVERRIDE_MAX_UNITS : qty
           const updated = await Product.updateOne(
-            { _id: row.productId, stock: { $gte: qty } },
+            { _id: row.productId, stock: { $gte: minRequiredStock } },
             { $inc: { stock: -qty } },
             session ? { session } : undefined,
           )
@@ -1100,6 +1159,249 @@ export async function listSales(req: Request, res: Response, next: NextFunction)
         cashier: serializeCashier(s.cashier),
       })),
     })
+  } catch (e) {
+    next(e)
+  }
+}
+
+type OfflineConflictLineInput = { productId?: unknown; name?: unknown; qty?: unknown }
+
+export async function reportOfflineSyncConflict(req: Request, res: Response, next: NextFunction) {
+  try {
+    const body = (req.body ?? {}) as {
+      clientLocalId?: unknown
+      tillCode?: unknown
+      scope?: unknown
+      errorMessage?: unknown
+      lines?: unknown
+    }
+    const clientLocalId = typeof body.clientLocalId === 'string' ? body.clientLocalId.trim() : ''
+    if (!clientLocalId) {
+      res.status(400).json({ message: 'clientLocalId is required' })
+      return
+    }
+    const tillCode = normalizeTillCode(body.tillCode) ?? undefined
+    const scope = body.scope === 'online' ? 'online' : 'offline'
+    const errorMessage =
+      typeof body.errorMessage === 'string' && body.errorMessage.trim()
+        ? body.errorMessage.trim().slice(0, 500)
+        : 'Offline sale sync failed'
+    const rawLines = Array.isArray(body.lines) ? (body.lines as OfflineConflictLineInput[]) : []
+    const lines = rawLines
+      .map((line) => {
+        const productId = typeof line.productId === 'string' ? line.productId.trim() : ''
+        const name = typeof line.name === 'string' ? line.name.trim() : ''
+        const qty = Number(line.qty ?? 0)
+        if (!productId || !name || !Number.isFinite(qty) || qty <= 0) return null
+        return { productId, name, qty: round2(qty) }
+      })
+      .filter((line): line is { productId: string; name: string; qty: number } => line != null)
+
+    const now = new Date()
+    await OfflineSyncConflict.updateOne(
+      { clientLocalId },
+      {
+        $set: {
+          tillCode,
+          scope,
+          errorMessage,
+          lines,
+          status: 'open',
+          lastSeenAt: now,
+          resolvedAt: null,
+          resolvedBy: null,
+          resolutionAction: null,
+          resolutionNote: null,
+          retryRequestedAt: null,
+          retryRequestedBy: null,
+        },
+        $setOnInsert: { firstSeenAt: now, attemptCount: 0 },
+        $inc: { attemptCount: 1 },
+      },
+      { upsert: true },
+    )
+    res.status(202).json({ ok: true })
+  } catch (e) {
+    next(e)
+  }
+}
+
+export async function listOfflineSyncConflicts(req: Request, res: Response, next: NextFunction) {
+  try {
+    const statusRaw = typeof req.query.status === 'string' ? req.query.status.trim().toLowerCase() : 'open'
+    const status = statusRaw === 'resolved' || statusRaw === 'all' ? statusRaw : 'open'
+    const tillCode = normalizeTillCode(req.query.tillCode)
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500)
+    const filter: Record<string, unknown> = {}
+    if (status !== 'all') filter.status = status
+    if (tillCode) filter.tillCode = tillCode
+
+    const [total, rows] = await Promise.all([
+      OfflineSyncConflict.countDocuments(filter),
+      OfflineSyncConflict.find(filter)
+        .sort({ status: 1, lastSeenAt: -1 })
+        .limit(limit)
+        .populate({ path: 'resolvedBy', select: 'email displayName' })
+        .populate({ path: 'retryRequestedBy', select: 'email displayName' })
+        .lean(),
+    ])
+    res.json({
+      total,
+      conflicts: rows.map((row) => ({
+        ...row,
+        resolvedBy:
+          row.resolvedBy && typeof row.resolvedBy === 'object'
+            ? {
+                email: (row.resolvedBy as { email?: string }).email,
+                displayName: (row.resolvedBy as { displayName?: string }).displayName,
+              }
+            : null,
+        retryRequestedBy:
+          row.retryRequestedBy && typeof row.retryRequestedBy === 'object'
+            ? {
+                email: (row.retryRequestedBy as { email?: string }).email,
+                displayName: (row.retryRequestedBy as { displayName?: string }).displayName,
+              }
+            : null,
+      })),
+    })
+  } catch (e) {
+    next(e)
+  }
+}
+
+export async function requestOfflineSyncConflictRetry(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!req.user) {
+      res.status(401).json({ message: 'Unauthorized' })
+      return
+    }
+    const id = String(req.params.id ?? '').trim()
+    if (!Types.ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid conflict id' })
+      return
+    }
+    const updated = await OfflineSyncConflict.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          retryRequestedAt: new Date(),
+          retryRequestedBy: new Types.ObjectId(String(req.user.id)),
+        },
+      },
+      { new: true },
+    ).lean()
+    if (!updated) {
+      res.status(404).json({ message: 'Conflict not found' })
+      return
+    }
+    res.json({ ok: true })
+  } catch (e) {
+    next(e)
+  }
+}
+
+export async function listOfflineSyncRetryRequests(req: Request, res: Response, next: NextFunction) {
+  try {
+    const tillCode = normalizeTillCode(req.query.tillCode)
+    if (!tillCode) {
+      res.status(400).json({ message: 'Invalid tillCode' })
+      return
+    }
+    const rows = await OfflineSyncConflict.find({
+      status: 'open',
+      tillCode,
+      retryRequestedAt: { $ne: null },
+    })
+      .select({ clientLocalId: 1, retryRequestedAt: 1 })
+      .sort({ retryRequestedAt: -1 })
+      .limit(100)
+      .lean()
+    res.json({
+      clientLocalIds: rows.map((row) => String(row.clientLocalId)),
+    })
+  } catch (e) {
+    next(e)
+  }
+}
+
+export async function resolveOfflineSyncConflict(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!req.user) {
+      res.status(401).json({ message: 'Unauthorized' })
+      return
+    }
+    const id = String(req.params.id ?? '').trim()
+    if (!Types.ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid conflict id' })
+      return
+    }
+    const body = (req.body ?? {}) as { action?: unknown; note?: unknown }
+    const actionRaw = typeof body.action === 'string' ? body.action.trim() : ''
+    const action =
+      actionRaw === 'stock_adjusted' || actionRaw === 'sale_retried' || actionRaw === 'waived' || actionRaw === 'other'
+        ? actionRaw
+        : null
+    const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : ''
+    if (!action) {
+      res.status(400).json({ message: 'resolution action is required' })
+      return
+    }
+    if (!note) {
+      res.status(400).json({ message: 'resolution note is required' })
+      return
+    }
+    const updated = await OfflineSyncConflict.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          status: 'resolved',
+          resolvedAt: new Date(),
+          resolvedBy: new Types.ObjectId(String(req.user.id)),
+          resolutionAction: action,
+          resolutionNote: note,
+          retryRequestedAt: null,
+          retryRequestedBy: null,
+        },
+      },
+      { new: true },
+    ).lean()
+    if (!updated) {
+      res.status(404).json({ message: 'Conflict not found' })
+      return
+    }
+    res.json({ ok: true })
+  } catch (e) {
+    next(e)
+  }
+}
+
+export async function resolveOfflineSyncConflictByClientLocalId(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!req.user) {
+      res.status(401).json({ message: 'Unauthorized' })
+      return
+    }
+    const clientLocalId = String(req.params.clientLocalId ?? '').trim()
+    if (!clientLocalId) {
+      res.status(400).json({ message: 'Invalid clientLocalId' })
+      return
+    }
+    await OfflineSyncConflict.updateOne(
+      { clientLocalId },
+      {
+        $set: {
+          status: 'resolved',
+          resolvedAt: new Date(),
+          resolvedBy: new Types.ObjectId(String(req.user.id)),
+          resolutionAction: 'sale_retried',
+          resolutionNote: 'Auto-resolved after successful sync replay.',
+          retryRequestedAt: null,
+          retryRequestedBy: null,
+        },
+      },
+    )
+    res.json({ ok: true })
   } catch (e) {
     next(e)
   }

@@ -12,6 +12,12 @@ export interface ISaleLine {
   quantity: number
   unitPrice: number
   listUnitPrice?: number
+  /** POS manager-approved stock override marker for audit. */
+  stockOverrideApproved?: boolean
+  /** Override source context at checkout time. */
+  stockOverrideScope?: 'offline' | 'online'
+  /** Catalog available qty snapshot seen by POS when override was approved. */
+  stockOverrideAvailableQty?: number
   lineTotal: number
 }
 
@@ -81,6 +87,9 @@ const saleLineSchema = new Schema<ISaleLine>(
     quantity: { type: Number, required: true, min: 1 },
     unitPrice: { type: Number, required: true, min: 0 },
     listUnitPrice: { type: Number, min: 0 },
+    stockOverrideApproved: { type: Boolean, default: false },
+    stockOverrideScope: { type: String, enum: ['offline', 'online'] },
+    stockOverrideAvailableQty: { type: Number },
     lineTotal: { type: Number, required: true, min: 0 },
   },
   { _id: false },
