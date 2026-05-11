@@ -47,6 +47,8 @@ export interface IStoreSettings {
   nextQuoteSeq: number
   /** Last assigned house account sequence; next account uses atomic increment. */
   nextHouseAccountSeq: number
+  /** Last assigned job card sequence; next job card uses atomic increment. */
+  nextJobCardSeq: number
   /** Shared POS preset buttons (category → sub-category → product); synced to all tills. */
   productPresets?: IProductPresetsState
 }
@@ -66,6 +68,7 @@ const storeSettingsSchema = new Schema<IStoreSettings>(
     /** Last assigned quote sequence (next quote = this + 1 atomically). */
     nextQuoteSeq: { type: Number, default: 0, min: 0 },
     nextHouseAccountSeq: { type: Number, default: 0, min: 0 },
+    nextJobCardSeq: { type: Number, default: 0, min: 0 },
     productPresets: {
       type: productPresetsSchema,
       default: () => ({ entries: [], categories: [], subCategoriesByCategory: {} }),

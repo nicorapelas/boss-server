@@ -8,8 +8,19 @@ export interface IOpenTabLine {
   listUnitPrice?: number
 }
 
+export type OpenTabKind = 'tab' | 'job_card'
+
 export interface IOpenTab {
+  kind: OpenTabKind
   tabNumber: string
+  /** Set when kind === job_card'; matches tabNumber (unique open-tab key). */
+  jobNumber?: string | null
+  /** Job card: item received / checked in (e.g. model, serial). */
+  itemCheckedIn?: string
+  /** Job card: work to be done. */
+  jobDescription?: string
+  /** Job card: printed under "Note:" on workshop/item slip only. */
+  attachmentNote?: string
   customerName: string
   phone: string
   lines: IOpenTabLine[]
@@ -31,7 +42,12 @@ const openTabLineSchema = new Schema<IOpenTabLine>(
 
 const openTabSchema = new Schema<IOpenTab>(
   {
+    kind: { type: String, enum: ['tab', 'job_card'], default: 'tab' },
     tabNumber: { type: String, required: true, trim: true },
+    jobNumber: { type: String, trim: true, default: null },
+    itemCheckedIn: { type: String, default: '', trim: true },
+    jobDescription: { type: String, default: '', trim: true },
+    attachmentNote: { type: String, default: '', trim: true },
     customerName: { type: String, required: true, trim: true },
     phone: { type: String, default: '', trim: true },
     lines: { type: [openTabLineSchema], default: [] },

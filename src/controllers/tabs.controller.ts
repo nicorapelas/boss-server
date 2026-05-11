@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express'
-import { OpenTab } from '../models/OpenTab.js'
+import { OpenTab, type OpenTabKind } from '../models/OpenTab.js'
+import { StoreSettings } from '../models/StoreSettings.js'
 
 type LineBody = {
   productId?: string
@@ -36,6 +37,42 @@ function normalizeLines(lines: LineBody[] | undefined) {
   return out
 }
 
+function tabKindFromBody(kindRaw: unknown): OpenTabKind {
+  return kindRaw === 'job_card' ? 'job_card' : 'tab'
+}
+
+function trimJobCardText(raw: unknown): string {
+  if (typeof raw !== 'string') return ''
+  return raw.trim()
+}
+
+function serializeTabListRow(t: {
+  _id: unknown
+  kind?: OpenTabKind
+  tabNumber: string
+  jobNumber?: string | null
+  customerName: string
+  phone?: string
+  lines?: { quantity: number; unitPrice: number }[]
+  updatedAt?: Date
+}) {
+  const doc = t as typeof t & { updatedAt?: Date }
+  const kind: OpenTabKind = t.kind ?? 'tab'
+  const total =
+    Math.round((t.lines ?? []).reduce((s, l) => s + l.quantity * l.unitPrice, 0) * 100) / 100
+  return {
+    _id: String(t._id),
+    kind,
+    tabNumber: t.tabNumber,
+    ...(kind === 'job_card' && t.jobNumber ? { jobNumber: t.jobNumber } : {}),
+    customerName: t.customerName,
+    phone: t.phone ?? '',
+    lineCount: (t.lines ?? []).reduce((s, l) => s + l.quantity, 0),
+    total,
+    updatedAt: doc.updatedAt,
+  }
+}
+
 export async function listOpenTabs(req: Request, res: Response, next: NextFunction) {
   try {
     if (!req.user) {
@@ -44,23 +81,9 @@ export async function listOpenTabs(req: Request, res: Response, next: NextFuncti
     }
     const tabs = await OpenTab.find({ status: 'open' })
       .sort({ updatedAt: -1 })
-      .select('tabNumber customerName phone lines updatedAt')
+      .select('kind tabNumber jobNumber customerName phone lines updatedAt')
       .lean()
-    const list = tabs.map((t) => {
-      const doc = t as typeof t & { updatedAt?: Date }
-      const total = Math.round(
-        (t.lines ?? []).reduce((s, l) => s + l.quantity * l.unitPrice, 0) * 100,
-      ) / 100
-      return {
-        _id: String(t._id),
-        tabNumber: t.tabNumber,
-        customerName: t.customerName,
-        phone: t.phone ?? '',
-        lineCount: (t.lines ?? []).reduce((s, l) => s + l.quantity, 0),
-        total,
-        updatedAt: doc.updatedAt,
-      }
-    })
+    const list = tabs.map((t) => serializeTabListRow(t))
     res.json(list)
   } catch (e) {
     next(e)
@@ -79,9 +102,19 @@ export async function getOpenTab(req: Request, res: Response, next: NextFunction
       return
     }
     const doc = tab as typeof tab & { updatedAt?: Date }
+    const kind: OpenTabKind = tab.kind ?? 'tab'
     res.json({
       _id: String(tab._id),
+      kind,
       tabNumber: tab.tabNumber,
+      ...(kind === 'job_card' && tab.jobNumber ? { jobNumber: tab.jobNumber } : {}),
+      ...(kind === 'job_card'
+        ? {
+            itemCheckedIn: tab.itemCheckedIn ?? '',
+            jobDescription: tab.jobDescription ?? '',
+            attachmentNote: tab.attachmentNote ?? '',
+          }
+        : {}),
       customerName: tab.customerName,
       phone: tab.phone ?? '',
       lines: (tab.lines ?? []).map((l) => ({
@@ -104,24 +137,54 @@ export async function createOpenTab(req: Request, res: Response, next: NextFunct
       res.status(401).json({ message: 'Unauthorized' })
       return
     }
-    const { tabNumber: rawNum, customerName: rawName, phone: rawPhone, lines: rawLines } =
-      req.body as {
-        tabNumber?: string
-        customerName?: string
-        phone?: string
-        lines?: LineBody[]
-      }
-    const tabNumber = rawNum?.trim() ?? ''
+    const {
+      tabNumber: rawNum,
+      customerName: rawName,
+      phone: rawPhone,
+      lines: rawLines,
+      kind: rawKind,
+      itemCheckedIn: rawItemIn,
+      jobDescription: rawJobDesc,
+      attachmentNote: rawAttachNote,
+    } = req.body as {
+      tabNumber?: string
+      customerName?: string
+      phone?: string
+      lines?: LineBody[]
+      kind?: string
+      itemCheckedIn?: string
+      jobDescription?: string
+      attachmentNote?: string
+    }
+    const kind = tabKindFromBody(rawKind)
     const customerName = rawName?.trim() ?? ''
     const phone = (rawPhone ?? '').trim()
-    if (!tabNumber) {
-      res.status(400).json({ message: 'Tab number is required' })
-      return
-    }
     if (!customerName) {
       res.status(400).json({ message: 'Name is required' })
       return
     }
+
+    let tabNumber = ''
+    let jobNumber: string | null = null
+
+    if (kind === 'job_card') {
+      const st = await StoreSettings.findOneAndUpdate(
+        { _id: 'default' },
+        [{ $set: { nextJobCardSeq: { $add: [{ $ifNull: ['$nextJobCardSeq', 0] }, 1] } } }],
+        { new: true, upsert: true, setDefaultsOnInsert: true },
+      ).lean()
+      const seq = st!.nextJobCardSeq
+      const year = new Date().getFullYear()
+      jobNumber = `JC-${year}-${String(seq).padStart(5, '0')}`
+      tabNumber = jobNumber
+    } else {
+      tabNumber = rawNum?.trim() ?? ''
+      if (!tabNumber) {
+        res.status(400).json({ message: 'Tab number is required' })
+        return
+      }
+    }
+
     let lines: NonNullable<ReturnType<typeof normalizeLines>> = []
     if (rawLines !== undefined) {
       const normalized = normalizeLines(rawLines)
@@ -131,9 +194,18 @@ export async function createOpenTab(req: Request, res: Response, next: NextFunct
       }
       lines = normalized
     }
+    const itemCheckedIn = kind === 'job_card' ? trimJobCardText(rawItemIn) : ''
+    const jobDescription = kind === 'job_card' ? trimJobCardText(rawJobDesc) : ''
+    const attachmentNote = kind === 'job_card' ? trimJobCardText(rawAttachNote) : ''
+
     try {
       const tab = await OpenTab.create({
+        kind,
         tabNumber,
+        jobNumber: kind === 'job_card' ? jobNumber : null,
+        itemCheckedIn,
+        jobDescription,
+        attachmentNote,
         customerName,
         phone,
         lines,
@@ -142,14 +214,28 @@ export async function createOpenTab(req: Request, res: Response, next: NextFunct
       })
       res.status(201).json({
         _id: String(tab._id),
+        kind: tab.kind ?? 'tab',
         tabNumber: tab.tabNumber,
+        ...(tab.kind === 'job_card' && tab.jobNumber ? { jobNumber: tab.jobNumber } : {}),
+        ...(tab.kind === 'job_card'
+          ? {
+              itemCheckedIn: tab.itemCheckedIn ?? '',
+              jobDescription: tab.jobDescription ?? '',
+              attachmentNote: tab.attachmentNote ?? '',
+            }
+          : {}),
         customerName: tab.customerName,
         phone: tab.phone,
         lines: tab.lines,
       })
     } catch (e: unknown) {
       if ((e as { code?: number })?.code === 11000) {
-        res.status(409).json({ message: 'An open tab already uses this tab number' })
+        res.status(409).json({
+          message:
+            kind === 'job_card'
+              ? 'Could not assign job number — please retry'
+              : 'An open tab already uses this tab number',
+        })
         return
       }
       throw e
@@ -165,23 +251,46 @@ export async function updateOpenTabLines(req: Request, res: Response, next: Next
       res.status(401).json({ message: 'Unauthorized' })
       return
     }
-    const normalized = normalizeLines((req.body as { lines?: LineBody[] }).lines)
+    const body = req.body as {
+      lines?: LineBody[]
+      itemCheckedIn?: string
+      jobDescription?: string
+      attachmentNote?: string
+    }
+    const normalized = normalizeLines(body.lines)
     if (normalized === null) {
       res.status(400).json({ message: 'lines array required' })
       return
     }
+    const existing = await OpenTab.findOne({ _id: req.params.id, status: 'open' }).select('kind').lean()
+    const setDoc: Record<string, unknown> = { lines: normalized }
+    if (existing?.kind === 'job_card') {
+      if (body.itemCheckedIn !== undefined) setDoc.itemCheckedIn = trimJobCardText(body.itemCheckedIn)
+      if (body.jobDescription !== undefined) setDoc.jobDescription = trimJobCardText(body.jobDescription)
+      if (body.attachmentNote !== undefined) setDoc.attachmentNote = trimJobCardText(body.attachmentNote)
+    }
     const tab = await OpenTab.findOneAndUpdate(
       { _id: req.params.id, status: 'open' },
-      { $set: { lines: normalized } },
+      { $set: setDoc },
       { new: true },
     ).lean()
     if (!tab) {
       res.status(404).json({ message: 'Open tab not found' })
       return
     }
+    const kind: OpenTabKind = tab.kind ?? 'tab'
     res.json({
       _id: String(tab._id),
+      kind,
       tabNumber: tab.tabNumber,
+      ...(kind === 'job_card' && tab.jobNumber ? { jobNumber: tab.jobNumber } : {}),
+      ...(kind === 'job_card'
+        ? {
+            itemCheckedIn: tab.itemCheckedIn ?? '',
+            jobDescription: tab.jobDescription ?? '',
+            attachmentNote: tab.attachmentNote ?? '',
+          }
+        : {}),
       customerName: tab.customerName,
       phone: tab.phone ?? '',
       lines: (tab.lines ?? []).map((l) => ({

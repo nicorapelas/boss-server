@@ -46,6 +46,7 @@ async function getSettings() {
       vatRate: 0.14,
       nextLayBySeq: 1,
       nextQuoteSeq: 0,
+      nextJobCardSeq: 0,
     })
     s = await StoreSettings.findById('default').lean()
   }

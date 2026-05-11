@@ -15,6 +15,7 @@ export const DEFAULT_STORE_SETTINGS_DOC = {
   nextLayBySeq: 1,
   nextQuoteSeq: 0,
   nextHouseAccountSeq: 0,
+  nextJobCardSeq: 0,
   productPresets: {
     entries: [] as { productId: string; category: string; subCategory: string; label: string }[],
     categories: [] as string[],
