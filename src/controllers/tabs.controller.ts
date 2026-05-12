@@ -159,7 +159,7 @@ export async function createOpenTab(req: Request, res: Response, next: NextFunct
     const kind = tabKindFromBody(rawKind)
     const customerName = rawName?.trim() ?? ''
     const phone = (rawPhone ?? '').trim()
-    if (!customerName) {
+    if (kind === 'tab' && !customerName) {
       res.status(400).json({ message: 'Name is required' })
       return
     }

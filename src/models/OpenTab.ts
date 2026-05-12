@@ -48,7 +48,8 @@ const openTabSchema = new Schema<IOpenTab>(
     itemCheckedIn: { type: String, default: '', trim: true },
     jobDescription: { type: String, default: '', trim: true },
     attachmentNote: { type: String, default: '', trim: true },
-    customerName: { type: String, required: true, trim: true },
+    /** May be empty for job_card; tabs require name at API layer. */
+    customerName: { type: String, default: '', trim: true },
     phone: { type: String, default: '', trim: true },
     lines: { type: [openTabLineSchema], default: [] },
     status: { type: String, enum: ['open', 'closed'], default: 'open' },
