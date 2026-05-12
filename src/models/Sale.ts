@@ -19,6 +19,10 @@ export interface ISaleLine {
   /** Catalog available qty snapshot seen by POS when override was approved. */
   stockOverrideAvailableQty?: number
   lineTotal: number
+  /** Snapshot: staff who rang this line (e.g. job card multi-user). */
+  addedByUserId?: Types.ObjectId | null
+  addedByDisplayName?: string
+  addedAt?: Date | null
 }
 
 export interface ISaleLegacy {
@@ -91,6 +95,9 @@ const saleLineSchema = new Schema<ISaleLine>(
     stockOverrideScope: { type: String, enum: ['offline', 'online'] },
     stockOverrideAvailableQty: { type: Number },
     lineTotal: { type: Number, required: true, min: 0 },
+    addedByUserId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    addedByDisplayName: { type: String, trim: true, maxlength: 120 },
+    addedAt: { type: Date, default: null },
   },
   { _id: false },
 )

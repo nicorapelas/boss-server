@@ -149,6 +149,43 @@ type BodyItem = {
   stockOverrideApproved?: boolean
   stockOverrideScope?: 'offline' | 'online'
   stockOverrideAvailableQty?: number
+  addedByUserId?: string
+  addedByDisplayName?: string
+  addedAt?: string
+}
+function lineAttributionFromBodyItem(row: BodyItem): {
+  addedByUserId?: Types.ObjectId
+  addedByDisplayName?: string
+  addedAt?: Date
+} {
+  let addedByUserId: Types.ObjectId | undefined
+  if (typeof row.addedByUserId === 'string' && Types.ObjectId.isValid(row.addedByUserId)) {
+    addedByUserId = new Types.ObjectId(row.addedByUserId)
+  }
+  const dn = typeof row.addedByDisplayName === 'string' ? row.addedByDisplayName.trim().slice(0, 120) : ''
+  const addedByDisplayName = dn || undefined
+  let addedAt: Date | undefined
+  if (typeof row.addedAt === 'string' && row.addedAt.trim()) {
+    const d = new Date(row.addedAt)
+    if (!Number.isNaN(d.getTime())) addedAt = d
+  }
+  return { addedByUserId, addedByDisplayName, addedAt }
+}
+
+function saleLineAttributionFields(row: {
+  addedByUserId?: Types.ObjectId
+  addedByDisplayName?: string
+  addedAt?: Date
+}): {
+  addedByUserId?: Types.ObjectId
+  addedByDisplayName?: string
+  addedAt?: Date
+} {
+  return {
+    ...(row.addedByUserId ? { addedByUserId: row.addedByUserId } : {}),
+    ...(row.addedByDisplayName ? { addedByDisplayName: row.addedByDisplayName } : {}),
+    ...(row.addedAt ? { addedAt: row.addedAt } : {}),
+  }
 }
 type BodyPayment = {
   cashAmount?: number
@@ -235,6 +272,9 @@ export async function createSale(req: Request, res: Response, next: NextFunction
       stockOverrideAvailableQty?: number
       lineTotal: number
       sku?: string
+      addedByUserId?: Types.ObjectId
+      addedByDisplayName?: string
+      addedAt?: Date
     }[] = []
 
     // NOTE: MongoDB transactions require a replica set. For local dev setups running a standalone
@@ -245,6 +285,7 @@ export async function createSale(req: Request, res: Response, next: NextFunction
     const normalized = items.map((row) => {
       const stockOverrideScope: 'offline' | 'online' | undefined =
         row.stockOverrideScope === 'offline' ? 'offline' : row.stockOverrideScope === 'online' ? 'online' : undefined
+      const attr = lineAttributionFromBodyItem(row)
       return {
         productId: row.productId,
         quantity: row.quantity,
@@ -256,6 +297,9 @@ export async function createSale(req: Request, res: Response, next: NextFunction
           row.stockOverrideAvailableQty !== undefined && Number.isFinite(Number(row.stockOverrideAvailableQty))
             ? round2(Math.max(0, Number(row.stockOverrideAvailableQty)))
             : undefined,
+        addedByUserId: attr.addedByUserId,
+        addedByDisplayName: attr.addedByDisplayName,
+        addedAt: attr.addedAt,
       }
     })
     const canManagerOverrideStock = hasPermission(req.user.permissions, req.user.role, 'register.manager')
@@ -378,6 +422,7 @@ export async function createSale(req: Request, res: Response, next: NextFunction
                   ? seg.listUnitPrice
                   : undefined,
               lineTotal: seg.lineTotal,
+              ...saleLineAttributionFields(row),
             })
           }
         } else {
@@ -410,6 +455,7 @@ export async function createSale(req: Request, res: Response, next: NextFunction
             stockOverrideScope: row.stockOverrideApproved === true ? row.stockOverrideScope : undefined,
             stockOverrideAvailableQty: row.stockOverrideApproved === true ? row.stockOverrideAvailableQty : undefined,
             lineTotal,
+            ...saleLineAttributionFields(row),
           })
         }
       }

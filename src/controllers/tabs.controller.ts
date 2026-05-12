@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from 'express'
+import { Types } from 'mongoose'
 import { OpenTab, type OpenTabKind } from '../models/OpenTab.js'
 import { StoreSettings } from '../models/StoreSettings.js'
 
@@ -8,6 +9,28 @@ type LineBody = {
   quantity?: number
   unitPrice?: number
   listUnitPrice?: number
+  addedByUserId?: string
+  addedByDisplayName?: string
+  addedAt?: string
+}
+
+function lineAttributionFromTabBody(row: LineBody): {
+  addedByUserId?: Types.ObjectId
+  addedByDisplayName?: string
+  addedAt?: Date
+} {
+  let addedByUserId: Types.ObjectId | undefined
+  if (typeof row.addedByUserId === 'string' && Types.ObjectId.isValid(row.addedByUserId)) {
+    addedByUserId = new Types.ObjectId(row.addedByUserId)
+  }
+  const dn = typeof row.addedByDisplayName === 'string' ? row.addedByDisplayName.trim().slice(0, 120) : ''
+  const addedByDisplayName = dn || undefined
+  let addedAt: Date | undefined
+  if (typeof row.addedAt === 'string' && row.addedAt.trim()) {
+    const d = new Date(row.addedAt)
+    if (!Number.isNaN(d.getTime())) addedAt = d
+  }
+  return { addedByUserId, addedByDisplayName, addedAt }
 }
 
 function normalizeLines(lines: LineBody[] | undefined) {
@@ -18,11 +41,15 @@ function normalizeLines(lines: LineBody[] | undefined) {
     quantity: number
     unitPrice: number
     listUnitPrice?: number
+    addedByUserId?: Types.ObjectId
+    addedByDisplayName?: string
+    addedAt?: Date
   }[] = []
   for (const row of lines) {
     if (!row.productId || !row.name || row.quantity == null || row.unitPrice == null) return null
     if (row.quantity < 1) return null
     if (row.unitPrice < 0) return null
+    const { addedByUserId, addedByDisplayName, addedAt } = lineAttributionFromTabBody(row)
     out.push({
       productId: row.productId,
       name: String(row.name).trim(),
@@ -32,6 +59,9 @@ function normalizeLines(lines: LineBody[] | undefined) {
         row.listUnitPrice !== undefined
           ? Math.round(Number(row.listUnitPrice) * 100) / 100
           : undefined,
+      ...(addedByUserId ? { addedByUserId } : {}),
+      ...(addedByDisplayName ? { addedByDisplayName } : {}),
+      ...(addedAt ? { addedAt } : {}),
     })
   }
   return out
@@ -123,6 +153,9 @@ export async function getOpenTab(req: Request, res: Response, next: NextFunction
         quantity: l.quantity,
         unitPrice: l.unitPrice,
         listUnitPrice: l.listUnitPrice,
+        ...(l.addedByUserId ? { addedByUserId: String(l.addedByUserId) } : {}),
+        ...(l.addedByDisplayName ? { addedByDisplayName: l.addedByDisplayName } : {}),
+        ...(l.addedAt ? { addedAt: new Date(l.addedAt).toISOString() } : {}),
       })),
       updatedAt: doc.updatedAt,
     })
@@ -299,6 +332,9 @@ export async function updateOpenTabLines(req: Request, res: Response, next: Next
         quantity: l.quantity,
         unitPrice: l.unitPrice,
         listUnitPrice: l.listUnitPrice,
+        ...(l.addedByUserId ? { addedByUserId: String(l.addedByUserId) } : {}),
+        ...(l.addedByDisplayName ? { addedByDisplayName: l.addedByDisplayName } : {}),
+        ...(l.addedAt ? { addedAt: new Date(l.addedAt).toISOString() } : {}),
       })),
     })
   } catch (e) {

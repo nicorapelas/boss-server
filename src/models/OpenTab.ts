@@ -6,6 +6,10 @@ export interface IOpenTabLine {
   quantity: number
   unitPrice: number
   listUnitPrice?: number
+  /** Staff who added this line (job card / tab audit). */
+  addedByUserId?: Types.ObjectId | null
+  addedByDisplayName?: string
+  addedAt?: Date | null
 }
 
 export type OpenTabKind = 'tab' | 'job_card'
@@ -36,6 +40,9 @@ const openTabLineSchema = new Schema<IOpenTabLine>(
     quantity: { type: Number, required: true, min: 1 },
     unitPrice: { type: Number, required: true, min: 0 },
     listUnitPrice: { type: Number, min: 0 },
+    addedByUserId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    addedByDisplayName: { type: String, trim: true, maxlength: 120 },
+    addedAt: { type: Date, default: null },
   },
   { _id: false },
 )
