@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express'
 import { Types } from 'mongoose'
 import { OpenTab, type OpenTabKind } from '../models/OpenTab.js'
 import { StoreSettings } from '../models/StoreSettings.js'
+import { hasPermission } from '../permissions/catalog.js'
 
 type LineBody = {
   productId?: string
@@ -12,6 +13,15 @@ type LineBody = {
   addedByUserId?: string
   addedByDisplayName?: string
   addedAt?: string
+  stockOverrideApproved?: boolean
+  stockOverrideScope?: string
+  stockOverrideAvailableQty?: number
+}
+
+type ExistingTabLine = {
+  stockOverrideApproved?: boolean
+  stockOverrideScope?: 'offline' | 'online'
+  stockOverrideAvailableQty?: number
 }
 
 function lineAttributionFromTabBody(row: LineBody): {
@@ -33,7 +43,14 @@ function lineAttributionFromTabBody(row: LineBody): {
   return { addedByUserId, addedByDisplayName, addedAt }
 }
 
-function normalizeLines(lines: LineBody[] | undefined) {
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
+}
+
+function normalizeLines(
+  lines: LineBody[] | undefined,
+  ctx: { canManager: boolean; existingLines?: ExistingTabLine[] },
+) {
   if (!Array.isArray(lines)) return null
   const out: {
     productId: string
@@ -44,12 +61,37 @@ function normalizeLines(lines: LineBody[] | undefined) {
     addedByUserId?: Types.ObjectId
     addedByDisplayName?: string
     addedAt?: Date
+    stockOverrideApproved?: boolean
+    stockOverrideScope?: 'offline' | 'online'
+    stockOverrideAvailableQty?: number
   }[] = []
-  for (const row of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const row = lines[i]
     if (!row.productId || !row.name || row.quantity == null || row.unitPrice == null) return null
     if (row.quantity < 1) return null
     if (row.unitPrice < 0) return null
     const { addedByUserId, addedByDisplayName, addedAt } = lineAttributionFromTabBody(row)
+    const prev = ctx.existingLines?.[i]
+    const claimApproved = row.stockOverrideApproved === true
+    let stockOverrideApproved = false
+    let stockOverrideScope: 'offline' | 'online' | undefined
+    let stockOverrideAvailableQty: number | undefined
+    if (claimApproved && (ctx.canManager || prev?.stockOverrideApproved === true)) {
+      stockOverrideApproved = true
+      stockOverrideScope =
+        row.stockOverrideScope === 'offline' ? 'offline' : row.stockOverrideScope === 'online' ? 'online' : undefined
+      const rawAvail = row.stockOverrideAvailableQty
+      if (rawAvail !== undefined && Number.isFinite(Number(rawAvail))) {
+        stockOverrideAvailableQty = round2(Math.max(0, Number(rawAvail)))
+      }
+    } else if (!claimApproved && prev?.stockOverrideApproved === true && !ctx.canManager) {
+      stockOverrideApproved = true
+      stockOverrideScope = prev.stockOverrideScope
+      stockOverrideAvailableQty =
+        prev.stockOverrideAvailableQty !== undefined && Number.isFinite(Number(prev.stockOverrideAvailableQty))
+          ? round2(Math.max(0, Number(prev.stockOverrideAvailableQty)))
+          : undefined
+    }
     out.push({
       productId: row.productId,
       name: String(row.name).trim(),
@@ -62,9 +104,52 @@ function normalizeLines(lines: LineBody[] | undefined) {
       ...(addedByUserId ? { addedByUserId } : {}),
       ...(addedByDisplayName ? { addedByDisplayName } : {}),
       ...(addedAt ? { addedAt } : {}),
+      ...(stockOverrideApproved
+        ? {
+            stockOverrideApproved: true,
+            ...(stockOverrideScope ? { stockOverrideScope } : {}),
+            ...(stockOverrideAvailableQty !== undefined ? { stockOverrideAvailableQty } : {}),
+          }
+        : {}),
     })
   }
   return out
+}
+
+function serializeTabLine(l: {
+  productId: unknown
+  name: string
+  quantity: number
+  unitPrice: number
+  listUnitPrice?: number
+  addedByUserId?: unknown
+  addedByDisplayName?: string
+  addedAt?: Date | null
+  stockOverrideApproved?: boolean
+  stockOverrideScope?: string
+  stockOverrideAvailableQty?: number
+}) {
+  return {
+    productId: String(l.productId),
+    name: l.name,
+    quantity: l.quantity,
+    unitPrice: l.unitPrice,
+    listUnitPrice: l.listUnitPrice,
+    ...(l.addedByUserId ? { addedByUserId: String(l.addedByUserId) } : {}),
+    ...(l.addedByDisplayName ? { addedByDisplayName: l.addedByDisplayName } : {}),
+    ...(l.addedAt ? { addedAt: new Date(l.addedAt).toISOString() } : {}),
+    ...(l.stockOverrideApproved === true
+      ? {
+          stockOverrideApproved: true,
+          ...(l.stockOverrideScope === 'offline' || l.stockOverrideScope === 'online'
+            ? { stockOverrideScope: l.stockOverrideScope }
+            : {}),
+          ...(l.stockOverrideAvailableQty !== undefined && Number.isFinite(Number(l.stockOverrideAvailableQty))
+            ? { stockOverrideAvailableQty: round2(Math.max(0, Number(l.stockOverrideAvailableQty))) }
+            : {}),
+        }
+      : {}),
+  }
 }
 
 function tabKindFromBody(kindRaw: unknown): OpenTabKind {
@@ -147,16 +232,7 @@ export async function getOpenTab(req: Request, res: Response, next: NextFunction
         : {}),
       customerName: tab.customerName,
       phone: tab.phone ?? '',
-      lines: (tab.lines ?? []).map((l) => ({
-        productId: String(l.productId),
-        name: l.name,
-        quantity: l.quantity,
-        unitPrice: l.unitPrice,
-        listUnitPrice: l.listUnitPrice,
-        ...(l.addedByUserId ? { addedByUserId: String(l.addedByUserId) } : {}),
-        ...(l.addedByDisplayName ? { addedByDisplayName: l.addedByDisplayName } : {}),
-        ...(l.addedAt ? { addedAt: new Date(l.addedAt).toISOString() } : {}),
-      })),
+      lines: (tab.lines ?? []).map((l) => serializeTabLine(l)),
       updatedAt: doc.updatedAt,
     })
   } catch (e) {
@@ -218,9 +294,10 @@ export async function createOpenTab(req: Request, res: Response, next: NextFunct
       }
     }
 
+    const canManager = hasPermission(req.user.permissions, req.user.role, 'register.manager')
     let lines: NonNullable<ReturnType<typeof normalizeLines>> = []
     if (rawLines !== undefined) {
-      const normalized = normalizeLines(rawLines)
+      const normalized = normalizeLines(rawLines, { canManager })
       if (normalized === null) {
         res.status(400).json({ message: 'Invalid lines' })
         return
@@ -259,7 +336,7 @@ export async function createOpenTab(req: Request, res: Response, next: NextFunct
           : {}),
         customerName: tab.customerName,
         phone: tab.phone,
-        lines: tab.lines,
+        lines: (tab.lines ?? []).map((l) => serializeTabLine(l)),
       })
     } catch (e: unknown) {
       if ((e as { code?: number })?.code === 11000) {
@@ -290,12 +367,22 @@ export async function updateOpenTabLines(req: Request, res: Response, next: Next
       jobDescription?: string
       attachmentNote?: string
     }
-    const normalized = normalizeLines(body.lines)
+    const existing = await OpenTab.findOne({ _id: req.params.id, status: 'open' }).select('kind lines').lean()
+    const canManager = hasPermission(req.user.permissions, req.user.role, 'register.manager')
+    const existingLines: ExistingTabLine[] = (existing?.lines ?? []).map((x) => ({
+      stockOverrideApproved: x.stockOverrideApproved === true,
+      stockOverrideScope:
+        x.stockOverrideScope === 'offline' || x.stockOverrideScope === 'online' ? x.stockOverrideScope : undefined,
+      stockOverrideAvailableQty:
+        x.stockOverrideAvailableQty !== undefined && Number.isFinite(Number(x.stockOverrideAvailableQty))
+          ? Number(x.stockOverrideAvailableQty)
+          : undefined,
+    }))
+    const normalized = normalizeLines(body.lines, { canManager, existingLines })
     if (normalized === null) {
       res.status(400).json({ message: 'lines array required' })
       return
     }
-    const existing = await OpenTab.findOne({ _id: req.params.id, status: 'open' }).select('kind').lean()
     const setDoc: Record<string, unknown> = { lines: normalized }
     if (existing?.kind === 'job_card') {
       if (body.itemCheckedIn !== undefined) setDoc.itemCheckedIn = trimJobCardText(body.itemCheckedIn)
@@ -326,16 +413,7 @@ export async function updateOpenTabLines(req: Request, res: Response, next: Next
         : {}),
       customerName: tab.customerName,
       phone: tab.phone ?? '',
-      lines: (tab.lines ?? []).map((l) => ({
-        productId: String(l.productId),
-        name: l.name,
-        quantity: l.quantity,
-        unitPrice: l.unitPrice,
-        listUnitPrice: l.listUnitPrice,
-        ...(l.addedByUserId ? { addedByUserId: String(l.addedByUserId) } : {}),
-        ...(l.addedByDisplayName ? { addedByDisplayName: l.addedByDisplayName } : {}),
-        ...(l.addedAt ? { addedAt: new Date(l.addedAt).toISOString() } : {}),
-      })),
+      lines: (tab.lines ?? []).map((l) => serializeTabLine(l)),
     })
   } catch (e) {
     next(e)

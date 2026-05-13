@@ -10,6 +10,10 @@ export interface IOpenTabLine {
   addedByUserId?: Types.ObjectId | null
   addedByDisplayName?: string
   addedAt?: Date | null
+  /** Carried through so checkout can honor manager oversell after tab reload / other cashier. */
+  stockOverrideApproved?: boolean
+  stockOverrideScope?: 'offline' | 'online'
+  stockOverrideAvailableQty?: number
 }
 
 export type OpenTabKind = 'tab' | 'job_card'
@@ -43,6 +47,9 @@ const openTabLineSchema = new Schema<IOpenTabLine>(
     addedByUserId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     addedByDisplayName: { type: String, trim: true, maxlength: 120 },
     addedAt: { type: Date, default: null },
+    stockOverrideApproved: { type: Boolean, default: false },
+    stockOverrideScope: { type: String, enum: ['offline', 'online'] },
+    stockOverrideAvailableQty: { type: Number, min: 0 },
   },
   { _id: false },
 )
