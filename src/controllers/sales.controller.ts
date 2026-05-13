@@ -262,7 +262,7 @@ export async function createSale(req: Request, res: Response, next: NextFunction
     }
 
     const lines: {
-      product: unknown
+      product?: unknown
       name: string
       quantity: number
       unitPrice: number
@@ -456,6 +456,30 @@ export async function createSale(req: Request, res: Response, next: NextFunction
             stockOverrideAvailableQty: row.stockOverrideApproved === true ? row.stockOverrideAvailableQty : undefined,
             lineTotal,
             ...saleLineAttributionFields(row),
+          })
+        }
+      }
+    }
+
+    if (!quoteId && openTabId) {
+      const tab = await OpenTab.findOne({ _id: openTabId, status: 'open' })
+        .select({ kind: 1 })
+        .lean()
+      if (tab?.kind === 'job_card') {
+        for (const row of normalized) {
+          const p = byId.get(row.productId as string)
+          if (!p) continue
+          const per = p.jobCardLabourPerUnit
+          if (per == null || !Number.isFinite(per) || per <= 0.0001) continue
+          const qty = row.quantity as number
+          const lab = round2(per * qty)
+          if (lab <= 0.0001) continue
+          lines.push({
+            name: `Labour — ${p.name}`,
+            quantity: 1,
+            unitPrice: lab,
+            lineTotal: lab,
+            sku: p.sku,
           })
         }
       }

@@ -61,6 +61,8 @@ export interface IProduct {
   tax?: IProductTax
   cost?: IProductCost
   priceTiers?: IProductPriceTiers
+  /** VAT-inclusive labour added per catalog unit when the line is sold on a job card (POS). Omitted or 0 = none. */
+  jobCardLabourPerUnit?: number
   legacy?: IProductLegacy
 }
 
@@ -111,6 +113,7 @@ const productSchema = new Schema<IProduct>(
       price5: { type: Number },
       price6: { type: Number },
     },
+    jobCardLabourPerUnit: { type: Number, min: 0, default: undefined },
     legacy: {
       source: { type: String, enum: ['vector'] },
       itemNo: { type: Number },

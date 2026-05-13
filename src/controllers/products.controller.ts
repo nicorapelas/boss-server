@@ -79,7 +79,19 @@ export async function getProduct(req: Request, res: Response, next: NextFunction
 
 export async function createProduct(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, sku, category, subCategory, barcode, price, stock, trackInventory, volumeTieringEnabled, volumeTiers } = req.body as {
+    const {
+      name,
+      sku,
+      category,
+      subCategory,
+      barcode,
+      price,
+      stock,
+      trackInventory,
+      volumeTieringEnabled,
+      volumeTiers,
+      jobCardLabourPerUnit,
+    } = req.body as {
       name?: string
       sku?: string
       category?: string | null
@@ -90,6 +102,7 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
       trackInventory?: boolean
       volumeTieringEnabled?: boolean
       volumeTiers?: unknown
+      jobCardLabourPerUnit?: unknown
     }
     if (!name || !sku || price === undefined) {
       res.status(400).json({ message: 'name, sku, and price required' })
@@ -103,6 +116,16 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
     }
     const cat = category?.trim() ? category.trim() : null
     const sub = cat && subCategory?.trim() ? subCategory.trim() : null
+    let labour: number | undefined
+    if (jobCardLabourPerUnit !== undefined && jobCardLabourPerUnit !== null && jobCardLabourPerUnit !== '') {
+      const n = Number(jobCardLabourPerUnit)
+      if (!Number.isFinite(n) || n < 0) {
+        res.status(400).json({ message: 'jobCardLabourPerUnit must be a non-negative number' })
+        return
+      }
+      const rounded = Math.round(n * 100) / 100
+      labour = rounded > 0.0001 ? rounded : undefined
+    }
     const product = await Product.create({
       name,
       sku,
@@ -114,6 +137,7 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
       trackInventory: trackInventory !== false,
       volumeTieringEnabled: vol,
       volumeTiers: v.tiers,
+      ...(labour !== undefined ? { jobCardLabourPerUnit: labour } : {}),
     })
     res.status(201).json(product)
   } catch (e) {
@@ -123,7 +147,19 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
 
 export async function updateProduct(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, sku, category, subCategory, barcode, price, stock, trackInventory, volumeTieringEnabled, volumeTiers } = req.body as {
+    const {
+      name,
+      sku,
+      category,
+      subCategory,
+      barcode,
+      price,
+      stock,
+      trackInventory,
+      volumeTieringEnabled,
+      volumeTiers,
+      jobCardLabourPerUnit,
+    } = req.body as {
       name?: string
       sku?: string
       category?: string | null
@@ -134,6 +170,7 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       trackInventory?: boolean
       volumeTieringEnabled?: boolean
       volumeTiers?: unknown
+      jobCardLabourPerUnit?: unknown
     }
     const $set: Record<string, unknown> = {}
     if (name !== undefined) $set.name = name
@@ -151,6 +188,18 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
     if (price !== undefined) $set.price = price
     if (stock !== undefined) $set.stock = stock
     if (trackInventory !== undefined) $set.trackInventory = Boolean(trackInventory)
+    if (jobCardLabourPerUnit !== undefined) {
+      if (jobCardLabourPerUnit === null || jobCardLabourPerUnit === '') {
+        $set.jobCardLabourPerUnit = 0
+      } else {
+        const n = Number(jobCardLabourPerUnit)
+        if (!Number.isFinite(n) || n < 0) {
+          res.status(400).json({ message: 'jobCardLabourPerUnit must be a non-negative number' })
+          return
+        }
+        $set.jobCardLabourPerUnit = Math.round(n * 100) / 100
+      }
+    }
     if (Object.keys($set).length === 0) {
       res.status(400).json({ message: 'No fields to update' })
       return
