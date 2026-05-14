@@ -426,8 +426,18 @@ export async function voidOpenTab(req: Request, res: Response, next: NextFunctio
       res.status(401).json({ message: 'Unauthorized' })
       return
     }
-    const tab = await OpenTab.findOneAndDelete({ _id: req.params.id, status: 'open' }).lean()
+    const tab = await OpenTab.findOne({ _id: req.params.id, status: 'open' }).lean()
     if (!tab) {
+      res.status(404).json({ message: 'Open tab not found' })
+      return
+    }
+    const kind: OpenTabKind = tab.kind ?? 'tab'
+    if (kind === 'job_card' && req.user.role !== 'admin') {
+      res.status(403).json({ message: 'Only an admin can void a job card' })
+      return
+    }
+    const deleted = await OpenTab.deleteOne({ _id: tab._id, status: 'open' })
+    if (deleted.deletedCount === 0) {
       res.status(404).json({ message: 'Open tab not found' })
       return
     }
