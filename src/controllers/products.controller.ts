@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express'
 import { reservedQtyByProduct } from './layby.controller.js'
 import { Product } from '../models/Product.js'
+import { deleteProductPhotoFile } from '../utils/productPhotoPaths.js'
 import { productTracksInventory } from '../utils/productInventory.js'
 import { validateVolumeTiers } from '../utils/volumePrice.js'
 
@@ -40,11 +41,16 @@ export async function listProducts(_req: Request, res: Response, next: NextFunct
       { $project: { _skuMainStr: 0, _skuTypeStr: 0, _skuMainNum: 0, _skuTypeNum: 0 } },
     ])
     const withLayBy = items.map(
-      (p: { _id: unknown; stock?: number; trackInventory?: boolean }) => {
+      (p: { _id: unknown; stock?: number; trackInventory?: boolean; photoRevision?: number }) => {
         const id = String(p._id)
+        const pr = p.photoRevision ?? 0
+        const base = {
+          ...p,
+          hasPhoto: pr > 0,
+        }
         if (!productTracksInventory(p)) {
           return {
-            ...p,
+            ...base,
             layByReservedQty: 0,
             availableQty: null as number | null,
           }
@@ -52,7 +58,7 @@ export async function listProducts(_req: Request, res: Response, next: NextFunct
         const r = reserved.get(id) ?? 0
         const stock = p.stock ?? 0
         return {
-          ...p,
+          ...base,
           layByReservedQty: r,
           availableQty: stock - r,
         }
@@ -241,11 +247,13 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
 
 export async function deleteProduct(req: Request, res: Response, next: NextFunction) {
   try {
-    const p = await Product.findByIdAndDelete(req.params.id)
+    const id = req.params.id
+    const p = await Product.findByIdAndDelete(id)
     if (!p) {
       res.status(404).json({ message: 'Product not found' })
       return
     }
+    await deleteProductPhotoFile(id)
     res.status(204).end()
   } catch (e) {
     next(e)
