@@ -29,6 +29,7 @@ export function createApp(options: {
     cors({
       origin: corsOrigin,
       credentials: true,
+      exposedHeaders: ['Content-Disposition', 'X-Backup-Filename'],
     }),
   )
   app.use(express.json())

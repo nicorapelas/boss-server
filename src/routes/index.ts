@@ -14,6 +14,7 @@ import { shiftsRouter } from './shifts.routes.js'
 import { salesRouter } from './sales.routes.js'
 import { storeCreditRouter } from './storeCredit.routes.js'
 import { tabsRouter } from './tabs.routes.js'
+import { storeBackupRouter } from './storeBackup.routes.js'
 import { usersRouter } from './users.routes.js'
 
 export function apiRouter(accessSecret: string) {
@@ -33,6 +34,7 @@ export function apiRouter(accessSecret: string) {
   r.use('/lay-bys', laybyRouter(requireAuth))
   r.use('/quotes', quotesRouter(requireAuth))
   r.use('/migration', migrationRouter(requireAuth))
+  r.use('/store-backup', storeBackupRouter(requireAuth))
   r.use('/users', usersRouter(requireAuth))
   r.use('/roles', rolesRouter(requireAuth))
   return r

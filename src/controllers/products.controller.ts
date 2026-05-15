@@ -3,6 +3,7 @@ import { reservedQtyByProduct } from './layby.controller.js'
 import { Product } from '../models/Product.js'
 import { deleteProductPhotoFile } from '../utils/productPhotoPaths.js'
 import { productTracksInventory } from '../utils/productInventory.js'
+import { canonicalizeSku } from '../utils/skuNormalize.js'
 import { validateVolumeTiers } from '../utils/volumePrice.js'
 
 export async function listProducts(_req: Request, res: Response, next: NextFunction) {
@@ -114,6 +115,11 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
       res.status(400).json({ message: 'name, sku, and price required' })
       return
     }
+    const normalizedSku = canonicalizeSku(sku)
+    if (!normalizedSku) {
+      res.status(400).json({ message: 'sku required' })
+      return
+    }
     const vol = Boolean(volumeTieringEnabled)
     const v = validateVolumeTiers(Number(price), vol, volumeTiers)
     if (!v.ok) {
@@ -134,7 +140,7 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
     }
     const product = await Product.create({
       name,
-      sku,
+      sku: normalizedSku,
       category: cat,
       subCategory: sub,
       barcode: barcode ?? null,
@@ -180,7 +186,14 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
     }
     const $set: Record<string, unknown> = {}
     if (name !== undefined) $set.name = name
-    if (sku !== undefined) $set.sku = sku
+    if (sku !== undefined) {
+      const normalizedSku = canonicalizeSku(sku)
+      if (!normalizedSku) {
+        res.status(400).json({ message: 'sku required' })
+        return
+      }
+      $set.sku = normalizedSku
+    }
     const catIn = category !== undefined ? (category?.trim() ? category.trim() : null) : undefined
     const subIn = subCategory !== undefined ? (subCategory?.trim() ? subCategory.trim() : null) : undefined
     if (catIn !== undefined) {
