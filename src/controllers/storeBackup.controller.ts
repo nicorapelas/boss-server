@@ -50,6 +50,7 @@ export async function restoreStoreBackup(req: Request, res: Response, next: Next
       message: 'Store backup restored. All users must sign in again.',
       manifest: result.manifest,
       inserted: result.inserted,
+      roleRepair: result.roleRepair,
     })
   } catch (e) {
     next(e)

@@ -3,6 +3,7 @@ import type { IRole } from '../models/Role.js'
 import { Role } from '../models/Role.js'
 import { User, hashPassword } from '../models/User.js'
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/jwt.js'
+import { coerceObjectId } from '../utils/objectId.js'
 import { hashToken } from '../utils/tokenHash.js'
 
 export class AuthError extends Error {
@@ -13,12 +14,32 @@ export class AuthError extends Error {
   }
 }
 
-function roleFromUser(user: { roleId: unknown }): IRole {
-  const r = user.roleId as IRole | null
-  if (!r || typeof r !== 'object' || !('slug' in r)) {
-    throw new AuthError(500, 'User role not loaded')
+async function resolveUserRole(user: { roleId: unknown }): Promise<IRole> {
+  const populated = user.roleId as IRole | null
+  if (
+    populated &&
+    typeof populated === 'object' &&
+    typeof populated.slug === 'string' &&
+    Array.isArray(populated.permissions)
+  ) {
+    return populated
   }
-  return r
+
+  const roleId = coerceObjectId(user.roleId)
+  if (roleId) {
+    const byId = await Role.findById(roleId)
+    if (byId) return byId
+  }
+
+  if (user.roleId && typeof user.roleId === 'object' && 'slug' in user.roleId) {
+    const slug = String((user.roleId as { slug?: string }).slug ?? '').toLowerCase()
+    if (slug) {
+      const bySlug = await Role.findOne({ slug })
+      if (bySlug) return bySlug
+    }
+  }
+
+  throw new AuthError(500, 'User role not loaded')
 }
 
 export async function registerUser(email: string, password: string, roleSlug: 'admin' | 'cashier' = 'cashier') {
@@ -38,7 +59,7 @@ export async function loginUser(
 ) {
   const user = await User.findOne({ email: email.toLowerCase() }).populate<{ roleId: IRole }>('roleId')
   if (!user) throw new AuthError(401, 'Invalid credentials')
-  const r = roleFromUser(user)
+  const r = await resolveUserRole(user)
   assertUserLoginAllowed(user.active, r.slug, user.legacy?.source, user.legacy?.canLogin)
   const ok = await bcrypt.compare(password, user.passwordHash)
   if (!ok) throw new AuthError(401, 'Invalid credentials')
@@ -56,7 +77,7 @@ export async function loginByBadge(
     $or: [{ badgeCode: normalized }, { email: normalized.toLowerCase() }],
   }).populate<{ roleId: IRole }>('roleId')
   if (!user) throw new AuthError(401, 'Invalid badge')
-  const r = roleFromUser(user)
+  const r = await resolveUserRole(user)
   assertUserLoginAllowed(user.active, r.slug, user.legacy?.source, user.legacy?.canLogin)
   return createSessionForUser(user, r, accessSecret, refreshSecret)
 }
@@ -79,7 +100,7 @@ export async function refreshSession(refreshToken: string, accessSecret: string,
   const matches = user.refreshTokenHash === hashToken(refreshToken)
   if (!matches) throw new AuthError(401, 'Invalid refresh token')
 
-  const r = roleFromUser(user)
+  const r = await resolveUserRole(user)
   const accessToken = signAccessToken(
     {
       id: user.id,
