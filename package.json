@@ -13,6 +13,8 @@
     "migrate:vector:users": "NODE_ENV=development tsx scripts/migrate-vector-users.ts",
     "migrate:vector:sales": "NODE_ENV=development tsx scripts/migrate-vector-sales.ts",
     "normalize:sku:vector": "NODE_ENV=development tsx scripts/normalize-vector-sku.ts",
+    "repair:user-roles": "NODE_ENV=development tsx scripts/repair-user-roles.ts",
+    "restore:store": "NODE_ENV=development tsx scripts/restore-store-backup.ts",
     "dev:local:vector": "NODE_ENV=development tsx scripts/dev-with-mongo-vector.ts",
     "build": "tsc",
     "start": "NODE_ENV=production node dist/index.js"

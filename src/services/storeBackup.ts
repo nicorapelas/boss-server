@@ -4,7 +4,7 @@ import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Types } from 'mongoose'
 import { ensureRolesAndMigrateUsers } from '../bootstrap/ensureRoles.js'
-import { coerceObjectId } from '../utils/objectId.js'
+import { normalizeRestoredUserRoleId, repairUserRoleLinks } from './userRoleRepair.js'
 import { HouseAccount, HouseAccountLedger } from '../models/HouseAccount.js'
 import { LayBy } from '../models/LayBy.js'
 import { OpenTab } from '../models/OpenTab.js'
@@ -264,75 +264,6 @@ async function insertManyPreservingIds(model: InsertManyModel, docs: JsonDoc[]):
   return docs.length
 }
 
-function normalizeRestoredUser(
-  doc: JsonDoc,
-  slugHints: Map<string, string>,
-): JsonDoc {
-  const out: JsonDoc = { ...doc }
-  const embedded = doc.roleId
-  let roleId = coerceObjectId(embedded)
-  let slugHint: string | undefined
-
-  if (!roleId && embedded && typeof embedded === 'object') {
-    const emb = embedded as { slug?: unknown; _id?: unknown }
-    if (typeof emb.slug === 'string') slugHint = emb.slug.toLowerCase()
-    roleId = coerceObjectId(emb._id)
-  }
-
-  const userId = coerceObjectId(doc._id)
-  if (slugHint && userId) slugHints.set(String(userId), slugHint)
-
-  if (roleId) out.roleId = roleId
-  else delete out.roleId
-  return out
-}
-
-async function repairRestoredUserRoles(
-  slugHints: Map<string, string>,
-): Promise<{ fixed: number; unresolved: number }> {
-  const roles = await Role.find().lean()
-  const roleIdSet = new Set(roles.map((r) => String(r._id)))
-  const roleBySlug = new Map(roles.map((r) => [r.slug, r._id]))
-
-  let fixed = 0
-  let unresolved = 0
-
-  const users = await User.find().select('roleId').lean()
-  for (const u of users) {
-    const userId = String(u._id)
-    let roleId = coerceObjectId(u.roleId)
-    if (roleId && roleIdSet.has(String(roleId))) continue
-
-    if (!roleId && u.roleId && typeof u.roleId === 'object' && 'slug' in (u.roleId as object)) {
-      roleId = coerceObjectId((u.roleId as { _id?: unknown })._id)
-    }
-    if (roleId && roleIdSet.has(String(roleId))) {
-      await User.updateOne({ _id: u._id }, { $set: { roleId } })
-      fixed += 1
-      continue
-    }
-
-    const slugHint = slugHints.get(userId)
-    const fallbackSlug =
-      slugHint === 'admin' ? 'admin' : slugHint === 'manager' ? 'manager' : 'cashier'
-    const fallback =
-      (slugHint ? roleBySlug.get(slugHint) : undefined) ??
-      roleBySlug.get(fallbackSlug) ??
-      roleBySlug.get('admin') ??
-      roles[0]?._id
-
-    if (!fallback) {
-      unresolved += 1
-      continue
-    }
-
-    await User.updateOne({ _id: u._id }, { $set: { roleId: fallback } })
-    fixed += 1
-  }
-
-  return { fixed, unresolved }
-}
-
 export type StoreRestoreResult = {
   manifest: StoreBackupManifest
   inserted: Record<string, number>
@@ -364,7 +295,9 @@ export async function restoreStoreBackupFromZip(zipPath: string): Promise<StoreR
 
   inserted.roles = await insertManyPreservingIds(Role, data['roles.json'])
   const userRoleSlugHints = new Map<string, string>()
-  const restoredUsers = data['users.json'].map((u) => normalizeRestoredUser(u, userRoleSlugHints))
+  const restoredUsers = data['users.json'].map(
+    (u) => normalizeRestoredUserRoleId(u, userRoleSlugHints) as JsonDoc,
+  )
   inserted.users = await insertManyPreservingIds(User, restoredUsers)
   inserted.products = await insertManyPreservingIds(Product, data['products.json'])
   inserted.suppliers = await insertManyPreservingIds(Supplier, data['suppliers.json'])
@@ -408,7 +341,7 @@ export async function restoreStoreBackupFromZip(zipPath: string): Promise<StoreR
   await User.updateMany({}, { $set: { refreshTokenHash: null, refreshTokenExpires: null } })
 
   await ensureRolesAndMigrateUsers()
-  const roleRepair = await repairRestoredUserRoles(userRoleSlugHints)
+  const roleRepair = await repairUserRoleLinks(userRoleSlugHints)
   if (roleRepair.unresolved > 0) {
     throw new Error(
       `${roleRepair.unresolved} user(s) could not be linked to a role after restore. Check roles.json in the backup.`,
