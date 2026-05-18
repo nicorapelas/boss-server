@@ -1,6 +1,11 @@
 import type { NextFunction, Request, Response } from 'express'
 import { Types } from 'mongoose'
-import { HouseAccount, HouseAccountLedger } from '../models/HouseAccount.js'
+import {
+  HOUSE_ACCOUNT_PAYMENT_TERMS,
+  HouseAccount,
+  HouseAccountLedger,
+  type HouseAccountPaymentTerms,
+} from '../models/HouseAccount.js'
 import { StoreSettings } from '../models/StoreSettings.js'
 
 function round2(n: number): number {
@@ -11,14 +16,69 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+function trimOptional(value: unknown, maxLen: number): string {
+  return typeof value === 'string' ? value.trim().slice(0, maxLen) : ''
+}
+
+function parseAddressLines(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((line) => String(line).trim()).filter(Boolean).slice(0, 8)
+  }
+  if (typeof value === 'string') {
+    return value
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(0, 8)
+  }
+  return []
+}
+
+function parsePaymentTerms(value: unknown): HouseAccountPaymentTerms {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  return (HOUSE_ACCOUNT_PAYMENT_TERMS as readonly string[]).includes(raw)
+    ? (raw as HouseAccountPaymentTerms)
+    : ''
+}
+
+type HouseAccountProfileInput = {
+  contactPerson?: string
+  email?: string
+  vatNumber?: string
+  addressLines?: string[] | string
+  paymentTerms?: string
+  notes?: string
+}
+
+function profileFromBody(body: HouseAccountProfileInput) {
+  return {
+    contactPerson: trimOptional(body.contactPerson, 120),
+    email: trimOptional(body.email, 160).toLowerCase(),
+    vatNumber: trimOptional(body.vatNumber, 32),
+    addressLines: parseAddressLines(body.addressLines),
+    paymentTerms: parsePaymentTerms(body.paymentTerms),
+    notes: trimOptional(body.notes, 2000),
+  }
+}
+
 export async function searchHouseAccounts(req: Request, res: Response, next: NextFunction) {
   try {
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
-    const limit = Math.min(Number(req.query.limit) || 50, 100)
-    const filter: Record<string, unknown> = { status: 'active' }
+    const limit = Math.min(Number(req.query.limit) || 50, 500)
+    const includeClosed =
+      req.query.includeClosed === '1' || req.query.includeClosed === 'true'
+    const filter: Record<string, unknown> = {}
+    if (!includeClosed) filter.status = 'active'
     if (q.length > 0) {
       const rx = new RegExp(escapeRegex(q), 'i')
-      filter.$or = [{ accountNumber: rx }, { name: rx }, { phone: rx }]
+      filter.$or = [
+        { accountNumber: rx },
+        { name: rx },
+        { phone: rx },
+        { contactPerson: rx },
+        { email: rx },
+        { vatNumber: rx },
+      ]
     }
     const list = await HouseAccount.find(filter)
       .sort({ accountNumber: 1 })
@@ -54,7 +114,7 @@ export async function createHouseAccount(req: Request, res: Response, next: Next
       name?: string
       phone?: string
       creditLimit?: number | null
-    }
+    } & HouseAccountProfileInput
     const name = typeof body.name === 'string' ? body.name.trim() : ''
     if (!name) {
       res.status(400).json({ message: 'name required' })
@@ -70,6 +130,7 @@ export async function createHouseAccount(req: Request, res: Response, next: Next
       }
       creditLimit = round2(n)
     }
+    const profile = profileFromBody(body)
 
     const settings = await StoreSettings.findOneAndUpdate(
       { _id: 'default' },
@@ -83,6 +144,7 @@ export async function createHouseAccount(req: Request, res: Response, next: Next
       accountNumber,
       name,
       phone,
+      ...profile,
       balance: 0,
       creditLimit,
       status: 'active',
@@ -105,7 +167,7 @@ export async function updateHouseAccount(req: Request, res: Response, next: Next
       phone?: string
       creditLimit?: number | null
       status?: 'active' | 'closed'
-    }
+    } & HouseAccountProfileInput
     const set: Record<string, unknown> = {}
     if (body.name !== undefined) {
       const name = String(body.name).trim()
@@ -116,6 +178,12 @@ export async function updateHouseAccount(req: Request, res: Response, next: Next
       set.name = name
     }
     if (body.phone !== undefined) set.phone = String(body.phone).trim()
+    if (body.contactPerson !== undefined) set.contactPerson = trimOptional(body.contactPerson, 120)
+    if (body.email !== undefined) set.email = trimOptional(body.email, 160).toLowerCase()
+    if (body.vatNumber !== undefined) set.vatNumber = trimOptional(body.vatNumber, 32)
+    if (body.addressLines !== undefined) set.addressLines = parseAddressLines(body.addressLines)
+    if (body.paymentTerms !== undefined) set.paymentTerms = parsePaymentTerms(body.paymentTerms)
+    if (body.notes !== undefined) set.notes = trimOptional(body.notes, 2000)
     if (body.creditLimit !== undefined) {
       if (body.creditLimit === null) set.creditLimit = null
       else {

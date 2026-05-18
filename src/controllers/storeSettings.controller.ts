@@ -1,10 +1,12 @@
 import type { NextFunction, Request, Response } from 'express'
 import { StoreSettings } from '../models/StoreSettings.js'
+import { DEFAULT_STORE_NAME } from '../brand.js'
+import { customerDisplayFromBody, mergeCustomerDisplay } from '../utils/customerDisplaySettings.js'
 import { mergeDefaultProductPresets } from '../utils/productPresets.js'
 
 export const DEFAULT_STORE_SETTINGS_DOC = {
   _id: 'default' as const,
-  storeName: 'ElectroPOS',
+  storeName: DEFAULT_STORE_NAME,
   storeAddressLines: [] as string[],
   storePhone: '',
   storeVatNumber: '',
@@ -21,6 +23,24 @@ export const DEFAULT_STORE_SETTINGS_DOC = {
     categories: [] as string[],
     subCategoriesByCategory: {} as Record<string, string[]>,
   },
+  customerDisplay: {
+    enabled: true,
+    idle: { headline: 'Welcome', subtext: '', imageUrl: '' },
+    theme: { backgroundColor: '#0f1419', accentColor: '#3b82f6' },
+    footerText: 'All prices include VAT',
+  },
+}
+
+function withMergedSettings(doc: {
+  productPresets?: Parameters<typeof mergeDefaultProductPresets>[0]
+  customerDisplay?: unknown
+  [key: string]: unknown
+}) {
+  return {
+    ...doc,
+    productPresets: mergeDefaultProductPresets(doc.productPresets),
+    customerDisplay: mergeCustomerDisplay(doc.customerDisplay),
+  }
 }
 
 export async function ensureStoreSettingsDoc() {
@@ -39,10 +59,7 @@ export async function getStoreSettings(_req: Request, res: Response, next: NextF
       res.status(500).json({ message: 'Store settings unavailable' })
       return
     }
-    res.json({
-      ...doc,
-      productPresets: mergeDefaultProductPresets(doc.productPresets),
-    })
+    res.json(withMergedSettings(doc))
   } catch (e) {
     next(e)
   }
@@ -59,6 +76,7 @@ export async function updateStoreSettings(req: Request, res: Response, next: Nex
       defaultDepositPercent: number
       defaultExpiryMonths: number
       vatRate: number
+      customerDisplay: unknown
     }>
     const set: Record<string, unknown> = {}
     if (body.storeName !== undefined) set.storeName = String(body.storeName).trim()
@@ -90,6 +108,8 @@ export async function updateStoreSettings(req: Request, res: Response, next: Nex
       }
       set.vatRate = n
     }
+    const cd = customerDisplayFromBody(body.customerDisplay)
+    if (cd) set.customerDisplay = cd
     const updated = await StoreSettings.findOneAndUpdate(
       { _id: 'default' },
       { $set: set },
@@ -99,10 +119,7 @@ export async function updateStoreSettings(req: Request, res: Response, next: Nex
       res.status(500).json({ message: 'Store settings unavailable' })
       return
     }
-    res.json({
-      ...updated,
-      productPresets: mergeDefaultProductPresets(updated.productPresets),
-    })
+    res.json(withMergedSettings(updated))
   } catch (e) {
     next(e)
   }

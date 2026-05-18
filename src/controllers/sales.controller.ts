@@ -14,6 +14,12 @@ import { hasPermission } from '../permissions/catalog.js'
 import { getOrCreateOpenShift } from './shifts.controller.js'
 import { canChargeAboveCatalogPrice } from '../utils/requestAuth.js'
 import { productTracksInventory } from '../utils/productInventory.js'
+import {
+  canApplyManagerStockOverride,
+  saleNeedsStockOverride,
+  shouldRelaxStockDecrement,
+} from '../utils/managerStockOverride.js'
+import { userHasRegisterManager } from '../utils/userPermissions.js'
 import { expandForProduct, productHasVolumeTiering } from '../utils/volumePrice.js'
 
 function round2(n: number): number {
@@ -37,7 +43,6 @@ function escapeRegex(s: string): string {
 }
 
 const SALE_ID_HEX_LEN = 10
-const MANAGER_STOCK_OVERRIDE_MAX_UNITS = 3
 
 function isObjectId24(s: string): boolean {
   return s.length === 24 && Types.ObjectId.isValid(s)
@@ -302,7 +307,11 @@ export async function createSale(req: Request, res: Response, next: NextFunction
         addedAt: attr.addedAt,
       }
     })
-    const canManagerOverrideStock = hasPermission(req.user.permissions, req.user.role, 'register.manager')
+    const canManagerOverrideStock = await userHasRegisterManager(
+      userId,
+      req.user.permissions,
+      req.user.role,
+    )
     for (const row of normalized) {
       if (!row.productId || !row.quantity || row.quantity < 1) {
         res.status(400).json({ message: 'Each item needs productId and quantity >= 1' })
@@ -352,12 +361,13 @@ export async function createSale(req: Request, res: Response, next: NextFunction
         if (productTracksInventory(p)) {
           const rsv = reserved.get(String(p._id)) ?? 0
           const available = (p.stock ?? 0) - rsv
-          const wantsOverride = row?.stockOverrideApproved === true
-          const canUseOverride =
-            wantsOverride &&
-            canManagerOverrideStock &&
-            qLine.quantity <= available + MANAGER_STOCK_OVERRIDE_MAX_UNITS
-          if (available < qLine.quantity && !canUseOverride) {
+          const canUseOverride = canApplyManagerStockOverride(
+            row ?? {},
+            available,
+            qLine.quantity,
+            canManagerOverrideStock,
+          )
+          if (saleNeedsStockOverride(available, qLine.quantity) && !canUseOverride) {
             res.status(409).json({ message: `Insufficient stock for ${p.sku}` })
             return
           }
@@ -393,12 +403,14 @@ export async function createSale(req: Request, res: Response, next: NextFunction
         if (productTracksInventory(p)) {
           const rsv = reserved.get(String(p._id)) ?? 0
           const available = (p.stock ?? 0) - rsv
-          const wantsOverride = row.stockOverrideApproved === true
-          const canUseOverride =
-            wantsOverride &&
-            canManagerOverrideStock &&
-            (row.quantity as number) <= available + MANAGER_STOCK_OVERRIDE_MAX_UNITS
-          if (available < (row.quantity as number) && !canUseOverride) {
+          const qty = row.quantity as number
+          const canUseOverride = canApplyManagerStockOverride(
+            row,
+            available,
+            qty,
+            canManagerOverrideStock,
+          )
+          if (saleNeedsStockOverride(available, qty) && !canUseOverride) {
             res.status(409).json({ message: `Insufficient stock for ${p.sku}` })
             return
           }
@@ -582,11 +594,19 @@ export async function createSale(req: Request, res: Response, next: NextFunction
           const qty = row.quantity as number
           const prod = byId.get(row.productId as string)
           if (!productTracksInventory(prod)) continue
-          const allowManagerOverride =
-            row.stockOverrideApproved === true && canManagerOverrideStock && qty >= 1 && Number.isFinite(qty)
-          const minRequiredStock = allowManagerOverride ? qty - MANAGER_STOCK_OVERRIDE_MAX_UNITS : qty
+          const rsv = reserved.get(String(row.productId)) ?? 0
+          const available = (prod?.stock ?? 0) - rsv
+          const relaxDecrement = shouldRelaxStockDecrement(
+            row,
+            available,
+            qty,
+            canManagerOverrideStock,
+          )
+          const stockFilter = relaxDecrement
+            ? { _id: row.productId }
+            : { _id: row.productId, stock: { $gte: qty } }
           const updated = await Product.updateOne(
-            { _id: row.productId, stock: { $gte: minRequiredStock } },
+            stockFilter,
             { $inc: { stock: -qty } },
             session ? { session } : undefined,
           )

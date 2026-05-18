@@ -31,7 +31,7 @@ async function main() {
 
   app.listen(config.port, () => {
     console.log(
-      `electropos-server [${config.env}] listening on http://localhost:${config.port}`,
+      `cognipos-server [${config.env}] listening on http://localhost:${config.port}`,
     )
   })
 }

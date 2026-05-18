@@ -6,9 +6,98 @@ import { productTracksInventory } from '../utils/productInventory.js'
 import { canonicalizeSku } from '../utils/skuNormalize.js'
 import { validateVolumeTiers } from '../utils/volumePrice.js'
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+type ProductLean = {
+  _id: unknown
+  stock?: number
+  trackInventory?: boolean
+  photoRevision?: number
+  [key: string]: unknown
+}
+
+async function enrichProductsWithAvailability(items: ProductLean[]) {
+  const reserved = await reservedQtyByProduct()
+  return items.map((p) => {
+    const id = String(p._id)
+    const pr = p.photoRevision ?? 0
+    const base = {
+      ...p,
+      hasPhoto: pr > 0,
+    }
+    if (!productTracksInventory(p)) {
+      return {
+        ...base,
+        layByReservedQty: 0,
+        availableQty: null as number | null,
+      }
+    }
+    const r = reserved.get(id) ?? 0
+    const stock = p.stock ?? 0
+    return {
+      ...base,
+      layByReservedQty: r,
+      availableQty: stock - r,
+    }
+  })
+}
+
+export async function searchProducts(req: Request, res: Response, next: NextFunction) {
+  try {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+    const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 50)
+    if (!q) {
+      res.json([])
+      return
+    }
+    const rx = new RegExp(escapeRegex(q), 'i')
+    const skuCanon = canonicalizeSku(q)
+    const or: Record<string, unknown>[] = [{ name: rx }, { sku: rx }, { barcode: rx }]
+    if (skuCanon && skuCanon !== q) {
+      or.push({ sku: new RegExp(`^${escapeRegex(skuCanon)}`, 'i') })
+    }
+    const items = await Product.find({ $or: or })
+      .sort({ sku: 1, name: 1 })
+      .limit(limit)
+      .lean()
+    res.json(await enrichProductsWithAvailability(items as ProductLean[]))
+  } catch (e) {
+    next(e)
+  }
+}
+
+export async function lookupProduct(req: Request, res: Response, next: NextFunction) {
+  try {
+    const skuRaw = typeof req.query.sku === 'string' ? req.query.sku.trim() : ''
+    const barcodeRaw = typeof req.query.barcode === 'string' ? req.query.barcode.trim() : ''
+    if (!skuRaw && !barcodeRaw) {
+      res.status(400).json({ message: 'sku or barcode query required' })
+      return
+    }
+    let p = null
+    if (barcodeRaw) {
+      p = await Product.findOne({ barcode: barcodeRaw }).lean()
+    } else {
+      const normalized = canonicalizeSku(skuRaw)
+      p =
+        (await Product.findOne({ sku: normalized }).lean()) ??
+        (normalized !== skuRaw ? await Product.findOne({ sku: skuRaw }).lean() : null)
+    }
+    if (!p) {
+      res.status(404).json({ message: 'Product not found' })
+      return
+    }
+    const [enriched] = await enrichProductsWithAvailability([p as ProductLean])
+    res.json(enriched)
+  } catch (e) {
+    next(e)
+  }
+}
+
 export async function listProducts(_req: Request, res: Response, next: NextFunction) {
   try {
-    const reserved = await reservedQtyByProduct()
     const items = await Product.aggregate([
       {
         $addFields: {
@@ -41,31 +130,7 @@ export async function listProducts(_req: Request, res: Response, next: NextFunct
       { $sort: { _skuMainNum: 1, _skuTypeNum: 1, sku: 1, name: 1 } },
       { $project: { _skuMainStr: 0, _skuTypeStr: 0, _skuMainNum: 0, _skuTypeNum: 0 } },
     ])
-    const withLayBy = items.map(
-      (p: { _id: unknown; stock?: number; trackInventory?: boolean; photoRevision?: number }) => {
-        const id = String(p._id)
-        const pr = p.photoRevision ?? 0
-        const base = {
-          ...p,
-          hasPhoto: pr > 0,
-        }
-        if (!productTracksInventory(p)) {
-          return {
-            ...base,
-            layByReservedQty: 0,
-            availableQty: null as number | null,
-          }
-        }
-        const r = reserved.get(id) ?? 0
-        const stock = p.stock ?? 0
-        return {
-          ...base,
-          layByReservedQty: r,
-          availableQty: stock - r,
-        }
-      },
-    )
-    res.json(withLayBy)
+    res.json(await enrichProductsWithAvailability(items as ProductLean[]))
   } catch (e) {
     next(e)
   }
@@ -78,7 +143,8 @@ export async function getProduct(req: Request, res: Response, next: NextFunction
       res.status(404).json({ message: 'Product not found' })
       return
     }
-    res.json(p)
+    const [enriched] = await enrichProductsWithAvailability([p as ProductLean])
+    res.json(enriched)
   } catch (e) {
     next(e)
   }

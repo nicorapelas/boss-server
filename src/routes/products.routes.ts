@@ -11,6 +11,8 @@ import {
   deleteProduct,
   getProduct,
   listProducts,
+  lookupProduct,
+  searchProducts,
   updateProduct,
 } from '../controllers/products.controller.js'
 
@@ -25,6 +27,8 @@ const productPhotoUpload = multer({
 
 export function productsRouter(requireAuth: RequestHandler) {
   const r = Router()
+  r.get('/search', requireAuth, requirePermission('catalog.read'), searchProducts)
+  r.get('/lookup', requireAuth, requirePermission('catalog.read'), lookupProduct)
   r.get('/', requireAuth, requirePermission('catalog.read'), listProducts)
   r.post('/', requireAuth, requirePermission('catalog.write'), createProduct)
   r.get('/:id/photo', requireAuth, requirePermission('catalog.read'), getProductPhoto)

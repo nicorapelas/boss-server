@@ -30,6 +30,51 @@ export type IProductPresetsState = {
   subCategoriesByCategory: Record<string, string[]>
 }
 
+export type ICustomerDisplayIdle = {
+  headline: string
+  subtext: string
+  imageUrl: string
+}
+
+export type ICustomerDisplayTheme = {
+  backgroundColor: string
+  accentColor: string
+}
+
+export type ICustomerDisplayConfig = {
+  enabled: boolean
+  idle: ICustomerDisplayIdle
+  theme: ICustomerDisplayTheme
+  footerText: string
+}
+
+const customerDisplayIdleSchema = new Schema(
+  {
+    headline: { type: String, trim: true, default: 'Welcome' },
+    subtext: { type: String, trim: true, default: '' },
+    imageUrl: { type: String, trim: true, default: '' },
+  },
+  { _id: false },
+)
+
+const customerDisplayThemeSchema = new Schema(
+  {
+    backgroundColor: { type: String, trim: true, default: '#0f1419' },
+    accentColor: { type: String, trim: true, default: '#3b82f6' },
+  },
+  { _id: false },
+)
+
+const customerDisplaySchema = new Schema(
+  {
+    enabled: { type: Boolean, default: true },
+    idle: { type: customerDisplayIdleSchema, default: () => ({}) },
+    theme: { type: customerDisplayThemeSchema, default: () => ({}) },
+    footerText: { type: String, trim: true, default: 'All prices include VAT' },
+  },
+  { _id: false },
+)
+
 /** Singleton POS / receipt / lay-by settings (one document). */
 export interface IStoreSettings {
   _id: string
@@ -51,12 +96,14 @@ export interface IStoreSettings {
   nextJobCardSeq: number
   /** Shared POS preset buttons (category → sub-category → product); synced to all tills. */
   productPresets?: IProductPresetsState
+  /** Customer-facing second screen (idle content when POS logged out). */
+  customerDisplay?: ICustomerDisplayConfig
 }
 
 const storeSettingsSchema = new Schema<IStoreSettings>(
   {
     _id: { type: String, required: true, default: 'default' },
-    storeName: { type: String, trim: true, default: 'ElectroPOS' },
+    storeName: { type: String, trim: true, default: 'CogniPOS' },
     storeAddressLines: { type: [String], default: [] },
     storePhone: { type: String, trim: true, default: '' },
     storeVatNumber: { type: String, trim: true, default: '' },
@@ -72,6 +119,15 @@ const storeSettingsSchema = new Schema<IStoreSettings>(
     productPresets: {
       type: productPresetsSchema,
       default: () => ({ entries: [], categories: [], subCategoriesByCategory: {} }),
+    },
+    customerDisplay: {
+      type: customerDisplaySchema,
+      default: () => ({
+        enabled: true,
+        idle: { headline: 'Welcome', subtext: '', imageUrl: '' },
+        theme: { backgroundColor: '#0f1419', accentColor: '#3b82f6' },
+        footerText: 'All prices include VAT',
+      }),
     },
   },
   { _id: false },

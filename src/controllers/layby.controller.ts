@@ -36,7 +36,7 @@ async function getSettings() {
   if (!s) {
     await StoreSettings.create({
       _id: 'default',
-      storeName: 'ElectroPOS',
+      storeName: 'CogniPOS',
       storeAddressLines: [],
       storePhone: '',
       storeVatNumber: '',
