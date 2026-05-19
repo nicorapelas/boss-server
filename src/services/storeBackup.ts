@@ -4,6 +4,7 @@ import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Types } from 'mongoose'
 import { ensureRolesAndMigrateUsers } from '../bootstrap/ensureRoles.js'
+import { coerceObjectId } from '../utils/objectId.js'
 import { normalizeRestoredUserRoleId, repairUserRoleLinks } from './userRoleRepair.js'
 import { HouseAccount, HouseAccountLedger } from '../models/HouseAccount.js'
 import { LayBy } from '../models/LayBy.js'
@@ -293,7 +294,13 @@ export async function restoreStoreBackupFromZip(zipPath: string): Promise<StoreR
 
   const inserted: Record<string, number> = {}
 
-  inserted.roles = await insertManyPreservingIds(Role, data['roles.json'])
+  inserted.roles = await insertManyPreservingIds(
+    Role,
+    data['roles.json'].map((r) => {
+      const id = coerceObjectId(r._id)
+      return id ? ({ ...r, _id: id } as JsonDoc) : r
+    }),
+  )
   const userRoleSlugHints = new Map<string, string>()
   const restoredUsers = data['users.json'].map(
     (u) => normalizeRestoredUserRoleId(u, userRoleSlugHints) as JsonDoc,

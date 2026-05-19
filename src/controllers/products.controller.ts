@@ -6,6 +6,8 @@ import { productTracksInventory } from '../utils/productInventory.js'
 import { canonicalizeSku } from '../utils/skuNormalize.js'
 import { validateVolumeTiers } from '../utils/volumePrice.js'
 
+const SCAN_SEARCH_MAX_LIMIT = 50
+
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
@@ -44,10 +46,18 @@ async function enrichProductsWithAvailability(items: ProductLean[]) {
   })
 }
 
+async function enrichOneProductWithAvailability(p: ProductLean) {
+  const [row] = await enrichProductsWithAvailability([p])
+  return row
+}
+
+/** CogniPOS Scan — text search (SKU, barcode, name); does not return full catalog. */
 export async function searchProducts(req: Request, res: Response, next: NextFunction) {
   try {
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
-    const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 50)
+    let limit = Number(req.query.limit)
+    if (!Number.isFinite(limit) || limit < 1) limit = 30
+    limit = Math.min(Math.floor(limit), SCAN_SEARCH_MAX_LIMIT)
     if (!q) {
       res.json([])
       return
@@ -68,29 +78,50 @@ export async function searchProducts(req: Request, res: Response, next: NextFunc
   }
 }
 
+/** CogniPOS Scan — exact SKU or barcode match (scanner wedge / lookup before search). */
 export async function lookupProduct(req: Request, res: Response, next: NextFunction) {
   try {
     const skuRaw = typeof req.query.sku === 'string' ? req.query.sku.trim() : ''
     const barcodeRaw = typeof req.query.barcode === 'string' ? req.query.barcode.trim() : ''
-    if (!skuRaw && !barcodeRaw) {
-      res.status(400).json({ message: 'sku or barcode query required' })
+    if ((skuRaw && barcodeRaw) || (!skuRaw && !barcodeRaw)) {
+      res.status(400).json({ message: 'Provide exactly one of sku or barcode' })
       return
     }
-    let p = null
-    if (barcodeRaw) {
-      p = await Product.findOne({ barcode: barcodeRaw }).lean()
-    } else {
+
+    let p: ProductLean | null = null
+
+    if (skuRaw) {
       const normalized = canonicalizeSku(skuRaw)
-      p =
-        (await Product.findOne({ sku: normalized }).lean()) ??
-        (normalized !== skuRaw ? await Product.findOne({ sku: skuRaw }).lean() : null)
+      if (normalized) {
+        p = (await Product.findOne({ sku: normalized }).lean()) as ProductLean | null
+      }
+      if (!p && normalized !== skuRaw) {
+        p = (await Product.findOne({ sku: skuRaw }).lean()) as ProductLean | null
+      }
+      if (!p) {
+        const pattern = `^${escapeRegex(skuRaw)}$`
+        p = (await Product.findOne({ sku: { $regex: pattern, $options: 'i' } }).lean()) as ProductLean | null
+      }
+    } else {
+      const digits = barcodeRaw.replace(/\D/g, '')
+      p = (await Product.findOne({ barcode: barcodeRaw }).lean()) as ProductLean | null
+      if (!p && digits && digits !== barcodeRaw) {
+        p = (await Product.findOne({ barcode: digits }).lean()) as ProductLean | null
+      }
+      if (!p && digits) {
+        const pattern = `^${escapeRegex(digits)}$`
+        p = (await Product.findOne({
+          barcode: { $regex: pattern, $options: 'i' },
+        }).lean()) as ProductLean | null
+      }
     }
+
     if (!p) {
       res.status(404).json({ message: 'Product not found' })
       return
     }
-    const [enriched] = await enrichProductsWithAvailability([p as ProductLean])
-    res.json(enriched)
+
+    res.json(await enrichOneProductWithAvailability(p))
   } catch (e) {
     next(e)
   }
@@ -143,8 +174,7 @@ export async function getProduct(req: Request, res: Response, next: NextFunction
       res.status(404).json({ message: 'Product not found' })
       return
     }
-    const [enriched] = await enrichProductsWithAvailability([p as ProductLean])
-    res.json(enriched)
+    res.json(await enrichOneProductWithAvailability(p as ProductLean))
   } catch (e) {
     next(e)
   }
@@ -313,12 +343,12 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       $set.volumeTieringEnabled = nextVol
       $set.volumeTiers = v.tiers
     }
-    const product = await Product.findByIdAndUpdate(req.params.id, { $set }, { new: true, runValidators: true })
+    const product = await Product.findByIdAndUpdate(req.params.id, { $set }, { new: true, runValidators: true }).lean()
     if (!product) {
       res.status(404).json({ message: 'Product not found' })
       return
     }
-    res.json(product)
+    res.json(await enrichOneProductWithAvailability(product as ProductLean))
   } catch (e) {
     next(e)
   }

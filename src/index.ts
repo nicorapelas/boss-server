@@ -13,7 +13,7 @@ async function main() {
   await ensureRolesAndMigrateUsers()
   const roleRepair = await repairUserRoleLinks()
   if (roleRepair.fixed > 0) {
-    console.log(`[startup] Repaired ${roleRepair.fixed} user role link(s)`)
+    console.log(`[startup] Repaired ${roleRepair.fixed} user→role link(s)`)
   }
   if (roleRepair.unresolved > 0) {
     console.warn(
