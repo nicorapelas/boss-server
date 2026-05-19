@@ -98,6 +98,10 @@ export interface IStoreSettings {
   productPresets?: IProductPresetsState
   /** Customer-facing second screen (idle content when POS logged out). */
   customerDisplay?: ICustomerDisplayConfig
+  /** Incremented when Back Office requests all tills to refresh product catalog. */
+  catalogRevision: number
+  /** ISO timestamp of last catalog push (informational). */
+  catalogPushedAt: string | null
 }
 
 const storeSettingsSchema = new Schema<IStoreSettings>(
@@ -129,6 +133,8 @@ const storeSettingsSchema = new Schema<IStoreSettings>(
         footerText: 'All prices include VAT',
       }),
     },
+    catalogRevision: { type: Number, default: 0, min: 0 },
+    catalogPushedAt: { type: String, default: null },
   },
   { _id: false },
 )

@@ -29,6 +29,8 @@ export const DEFAULT_STORE_SETTINGS_DOC = {
     theme: { backgroundColor: '#0f1419', accentColor: '#3b82f6' },
     footerText: 'All prices include VAT',
   },
+  catalogRevision: 0,
+  catalogPushedAt: null as string | null,
 }
 
 function withMergedSettings(doc: {
@@ -60,6 +62,43 @@ export async function getStoreSettings(_req: Request, res: Response, next: NextF
       return
     }
     res.json(withMergedSettings(doc))
+  } catch (e) {
+    next(e)
+  }
+}
+
+export async function getCatalogSync(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const doc = await ensureStoreSettingsDoc()
+    if (!doc) {
+      res.status(500).json({ message: 'Store settings unavailable' })
+      return
+    }
+    res.json({
+      catalogRevision: typeof doc.catalogRevision === 'number' ? doc.catalogRevision : 0,
+      catalogPushedAt: doc.catalogPushedAt ?? null,
+    })
+  } catch (e) {
+    next(e)
+  }
+}
+
+export async function pushCatalogToTills(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const catalogPushedAt = new Date().toISOString()
+    const updated = await StoreSettings.findOneAndUpdate(
+      { _id: 'default' },
+      { $inc: { catalogRevision: 1 }, $set: { catalogPushedAt } },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
+    ).lean()
+    if (!updated) {
+      res.status(500).json({ message: 'Store settings unavailable' })
+      return
+    }
+    res.json({
+      catalogRevision: typeof updated.catalogRevision === 'number' ? updated.catalogRevision : 1,
+      catalogPushedAt,
+    })
   } catch (e) {
     next(e)
   }
