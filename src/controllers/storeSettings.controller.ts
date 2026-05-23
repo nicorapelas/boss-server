@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express'
 import { StoreSettings } from '../models/StoreSettings.js'
 import { DEFAULT_STORE_NAME } from '../brand.js'
 import { customerDisplayFromBody, mergeCustomerDisplay } from '../utils/customerDisplaySettings.js'
+import { bumpCatalogRevision } from '../services/catalogRevision.js'
 import { mergeDefaultProductPresets } from '../utils/productPresets.js'
 
 export const DEFAULT_STORE_SETTINGS_DOC = {
@@ -85,19 +86,11 @@ export async function getCatalogSync(_req: Request, res: Response, next: NextFun
 
 export async function pushCatalogToTills(_req: Request, res: Response, next: NextFunction) {
   try {
-    const catalogPushedAt = new Date().toISOString()
-    const updated = await StoreSettings.findOneAndUpdate(
-      { _id: 'default' },
-      { $inc: { catalogRevision: 1 }, $set: { catalogPushedAt } },
-      { new: true, upsert: true, setDefaultsOnInsert: true },
-    ).lean()
-    if (!updated) {
-      res.status(500).json({ message: 'Store settings unavailable' })
-      return
-    }
+    const catalogRevision = await bumpCatalogRevision()
+    const doc = await ensureStoreSettingsDoc()
     res.json({
-      catalogRevision: typeof updated.catalogRevision === 'number' ? updated.catalogRevision : 1,
-      catalogPushedAt,
+      catalogRevision,
+      catalogPushedAt: doc?.catalogPushedAt ?? new Date().toISOString(),
     })
   } catch (e) {
     next(e)

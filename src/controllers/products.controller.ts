@@ -4,6 +4,7 @@ import { Product } from '../models/Product.js'
 import { deleteProductPhotoFile } from '../utils/productPhotoPaths.js'
 import { productTracksInventory } from '../utils/productInventory.js'
 import { canonicalizeSku } from '../utils/skuNormalize.js'
+import { bumpCatalogRevision } from '../services/catalogRevision.js'
 import { validateVolumeTiers } from '../utils/volumePrice.js'
 
 const SCAN_SEARCH_MAX_LIMIT = 50
@@ -348,6 +349,7 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       res.status(404).json({ message: 'Product not found' })
       return
     }
+    await bumpCatalogRevision()
     res.json(await enrichOneProductWithAvailability(product as ProductLean))
   } catch (e) {
     next(e)
