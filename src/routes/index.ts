@@ -20,6 +20,9 @@ import { usersRouter } from './users.routes.js'
 export function apiRouter(accessSecret: string) {
   const requireAuth = buildRequireAuth(accessSecret)
   const r = Router()
+  r.get('/health', (_req, res) => {
+    res.json({ ok: true })
+  })
   r.use('/auth', authRouter(requireAuth))
   r.use('/products', productsRouter(requireAuth))
   r.use('/suppliers', suppliersRouter(requireAuth))
