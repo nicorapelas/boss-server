@@ -10,6 +10,7 @@ type PopulatedUser = {
   badgeCode?: string
   active?: boolean
   allowOfflineLogin?: boolean
+  allowShopAssistCatalogAdjustment?: boolean
   legacy?: unknown
   createdAt?: Date
   updatedAt?: Date
@@ -26,6 +27,7 @@ function serializeUser(u: PopulatedUser) {
       badgeCode: u.badgeCode,
       active: u.active,
       allowOfflineLogin: u.allowOfflineLogin,
+      allowShopAssistCatalogAdjustment: u.allowShopAssistCatalogAdjustment,
       legacy: u.legacy,
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
@@ -43,6 +45,7 @@ function serializeUser(u: PopulatedUser) {
     badgeCode: u.badgeCode,
     active: u.active,
     allowOfflineLogin: u.allowOfflineLogin,
+    allowShopAssistCatalogAdjustment: u.allowShopAssistCatalogAdjustment,
     legacy: u.legacy,
     createdAt: u.createdAt,
     updatedAt: u.updatedAt,
@@ -69,7 +72,16 @@ export async function listUsers(_req: Request, res: Response, next: NextFunction
 
 export async function createUser(req: Request, res: Response, next: NextFunction) {
   try {
-    const { email, password, roleId, displayName, badgeCode, active, allowOfflineLogin } = req.body as {
+    const {
+      email,
+      password,
+      roleId,
+      displayName,
+      badgeCode,
+      active,
+      allowOfflineLogin,
+      allowShopAssistCatalogAdjustment,
+    } = req.body as {
       email?: string
       password?: string
       roleId?: string
@@ -77,6 +89,7 @@ export async function createUser(req: Request, res: Response, next: NextFunction
       badgeCode?: string
       active?: boolean
       allowOfflineLogin?: boolean
+      allowShopAssistCatalogAdjustment?: boolean
     }
 
     if (!email || !password) {
@@ -113,6 +126,7 @@ export async function createUser(req: Request, res: Response, next: NextFunction
       badgeCode: badgeCode?.trim() || undefined,
       active: active ?? true,
       allowOfflineLogin: allowOfflineLogin ?? false,
+      allowShopAssistCatalogAdjustment: allowShopAssistCatalogAdjustment ?? false,
     })
 
     const safeUser = await User.findById(user._id)
@@ -131,7 +145,16 @@ export async function createUser(req: Request, res: Response, next: NextFunction
 
 export async function updateUser(req: Request, res: Response, next: NextFunction) {
   try {
-    const { roleId, active, canLogin, badgeCode, email, displayName, allowOfflineLogin } = req.body as {
+    const {
+      roleId,
+      active,
+      canLogin,
+      badgeCode,
+      email,
+      displayName,
+      allowOfflineLogin,
+      allowShopAssistCatalogAdjustment,
+    } = req.body as {
       roleId?: string
       active?: boolean
       canLogin?: boolean
@@ -139,6 +162,7 @@ export async function updateUser(req: Request, res: Response, next: NextFunction
       email?: string
       displayName?: string
       allowOfflineLogin?: boolean
+      allowShopAssistCatalogAdjustment?: boolean
     }
 
     const $set: Record<string, unknown> = {}
@@ -153,6 +177,9 @@ export async function updateUser(req: Request, res: Response, next: NextFunction
     }
     if (active !== undefined) $set.active = active
     if (allowOfflineLogin !== undefined) $set.allowOfflineLogin = allowOfflineLogin
+    if (allowShopAssistCatalogAdjustment !== undefined) {
+      $set.allowShopAssistCatalogAdjustment = allowShopAssistCatalogAdjustment
+    }
     if (canLogin !== undefined) $set['legacy.canLogin'] = canLogin
     if (email !== undefined) $set.email = email.toLowerCase().trim()
     if (displayName !== undefined) {

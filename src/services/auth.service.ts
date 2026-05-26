@@ -14,6 +14,12 @@ export class AuthError extends Error {
   }
 }
 
+function permissionsForSession(role: IRole, user: { allowShopAssistCatalogAdjustment?: boolean }) {
+  const permissions = new Set(role.permissions)
+  if (user.allowShopAssistCatalogAdjustment) permissions.add('catalog.write')
+  return [...permissions]
+}
+
 async function resolveUserRole(user: { roleId: unknown }): Promise<IRole> {
   const populated = user.roleId as IRole | null
   if (
@@ -101,12 +107,13 @@ export async function refreshSession(refreshToken: string, accessSecret: string,
   if (!matches) throw new AuthError(401, 'Invalid refresh token')
 
   const r = await resolveUserRole(user)
+  const permissions = permissionsForSession(r, user)
   const accessToken = signAccessToken(
     {
       id: user.id,
       email: user.email,
       role: r.slug,
-      permissions: r.permissions,
+      permissions,
     },
     accessSecret,
   )
@@ -123,8 +130,9 @@ export async function refreshSession(refreshToken: string, accessSecret: string,
       email: user.email,
       displayName: user.displayName,
       role: r.slug,
-      permissions: r.permissions,
+      permissions,
       allowOfflineLogin: Boolean((user as { allowOfflineLogin?: boolean }).allowOfflineLogin),
+      allowShopAssistCatalogAdjustment: Boolean(user.allowShopAssistCatalogAdjustment),
     },
   }
 }
@@ -154,6 +162,7 @@ async function createSessionForUser(
     _id?: { toString: () => string } | string
     email: string
     displayName?: string | null
+    allowShopAssistCatalogAdjustment?: boolean
     refreshTokenHash?: string | null
     refreshTokenExpires?: Date | null
     save: () => Promise<unknown>
@@ -166,12 +175,13 @@ async function createSessionForUser(
   if (!userId) {
     throw new AuthError(500, 'User id missing')
   }
+  const permissions = permissionsForSession(role, user)
   const accessToken = signAccessToken(
     {
       id: userId,
       email: user.email,
       role: role.slug,
-      permissions: role.permissions,
+      permissions,
     },
     accessSecret,
   )
@@ -188,8 +198,9 @@ async function createSessionForUser(
       email: user.email,
       displayName: user.displayName ?? undefined,
       role: role.slug,
-      permissions: role.permissions,
+      permissions,
       allowOfflineLogin: Boolean((user as { allowOfflineLogin?: boolean }).allowOfflineLogin),
+      allowShopAssistCatalogAdjustment: Boolean(user.allowShopAssistCatalogAdjustment),
     },
   }
 }

@@ -11,6 +11,7 @@ import { rolesRouter } from './roles.routes.js'
 import { supplierOffersRouter, suppliersRouter } from './suppliers.routes.js'
 import { settingsRouter } from './settings.routes.js'
 import { shiftsRouter } from './shifts.routes.js'
+import { shopAssistCartsRouter } from './shopAssistCarts.routes.js'
 import { salesRouter } from './sales.routes.js'
 import { storeCreditRouter } from './storeCredit.routes.js'
 import { tabsRouter } from './tabs.routes.js'
@@ -28,6 +29,7 @@ export function apiRouter(accessSecret: string) {
   r.use('/suppliers', suppliersRouter(requireAuth))
   r.use('/supplier-offers', supplierOffersRouter(requireAuth))
   r.use('/sales', salesRouter(requireAuth))
+  r.use('/shop-assist-carts', shopAssistCartsRouter(requireAuth))
   r.use('/shifts', shiftsRouter(requireAuth))
   r.use('/tabs', tabsRouter(requireAuth))
   r.use('/financials', financialsRouter(requireAuth))

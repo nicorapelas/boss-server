@@ -16,6 +16,7 @@ export interface IUser {
   displayName?: string
   active?: boolean
   allowOfflineLogin?: boolean
+  allowShopAssistCatalogAdjustment?: boolean
   legacy?: IUserLegacy
   refreshTokenHash?: string | null
   refreshTokenExpires?: Date | null
@@ -30,6 +31,7 @@ const userSchema = new Schema<IUser>(
     roleId: { type: Schema.Types.ObjectId, ref: 'Role', required: true },
     active: { type: Boolean, default: true },
     allowOfflineLogin: { type: Boolean, default: false },
+    allowShopAssistCatalogAdjustment: { type: Boolean, default: false },
     legacy: {
       source: { type: String, enum: ['vector'] },
       userNo: { type: Number },
