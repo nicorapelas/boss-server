@@ -10,6 +10,7 @@ import {
   createProduct,
   deleteProduct,
   getProduct,
+  listProductStockAdjustments,
   listProducts,
   lookupProduct,
   searchProducts,
@@ -52,6 +53,12 @@ export function productsRouter(requireAuth: RequestHandler) {
     uploadProductPhoto,
   )
   r.delete('/:id/photo', requireAuth, requirePermission('catalog.write'), deleteProductPhoto)
+  r.get(
+    '/:id/stock-adjustments',
+    requireAuth,
+    requirePermission('catalog.read'),
+    listProductStockAdjustments,
+  )
   r.get('/:id', requireAuth, requirePermission('catalog.read'), getProduct)
   r.patch('/:id', requireAuth, requirePermission('catalog.write'), updateProduct)
   r.delete('/:id', requireAuth, requirePermission('catalog.write'), deleteProduct)

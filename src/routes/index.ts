@@ -8,6 +8,7 @@ import { migrationRouter } from './migration.routes.js'
 import { productsRouter } from './products.routes.js'
 import { quotesRouter } from './quotes.routes.js'
 import { rolesRouter } from './roles.routes.js'
+import { eventsRouter } from './events.routes.js'
 import { supplierOffersRouter, suppliersRouter } from './suppliers.routes.js'
 import { settingsRouter } from './settings.routes.js'
 import { shiftsRouter } from './shifts.routes.js'
@@ -24,6 +25,7 @@ export function apiRouter(accessSecret: string) {
   r.get('/health', (_req, res) => {
     res.json({ ok: true })
   })
+  r.use('/events', eventsRouter(requireAuth))
   r.use('/auth', authRouter(requireAuth))
   r.use('/products', productsRouter(requireAuth))
   r.use('/suppliers', suppliersRouter(requireAuth))

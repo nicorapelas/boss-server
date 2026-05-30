@@ -1,11 +1,19 @@
 import type { Request, Response, NextFunction } from 'express'
+import type { Types } from 'mongoose'
 import { reservedQtyByProduct } from './layby.controller.js'
 import { Product } from '../models/Product.js'
 import { deleteProductPhotoFile } from '../utils/productPhotoPaths.js'
 import { productTracksInventory } from '../utils/productInventory.js'
 import { canonicalizeSku } from '../utils/skuNormalize.js'
 import { bumpCatalogRevision } from '../services/catalogRevision.js'
+import {
+  listStockAdjustmentsForProduct as fetchStockAdjustmentsForProduct,
+  recordStockAdjustment,
+} from '../services/stockAdjustmentLog.service.js'
 import { validateVolumeTiers } from '../utils/volumePrice.js'
+
+const STOCK_ADJUSTMENT_LIST_DEFAULT = 30
+const STOCK_ADJUSTMENT_LIST_MAX = 100
 
 const SCAN_SEARCH_MAX_LIMIT = 50
 
@@ -181,6 +189,23 @@ export async function getProduct(req: Request, res: Response, next: NextFunction
   }
 }
 
+export async function listProductStockAdjustments(req: Request, res: Response, next: NextFunction) {
+  try {
+    const p = await Product.findById(req.params.id).select('_id').lean()
+    if (!p) {
+      res.status(404).json({ message: 'Product not found' })
+      return
+    }
+    let limit = Number(req.query.limit)
+    if (!Number.isFinite(limit) || limit < 1) limit = STOCK_ADJUSTMENT_LIST_DEFAULT
+    limit = Math.min(Math.floor(limit), STOCK_ADJUSTMENT_LIST_MAX)
+    const items = await fetchStockAdjustmentsForProduct(req.params.id, limit)
+    res.json(items)
+  } catch (e) {
+    next(e)
+  }
+}
+
 export async function createProduct(req: Request, res: Response, next: NextFunction) {
   try {
     const {
@@ -235,6 +260,7 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
       const rounded = Math.round(n * 100) / 100
       labour = rounded > 0.0001 ? rounded : undefined
     }
+    const initialStock = stock ?? 0
     const product = await Product.create({
       name,
       sku: normalizedSku,
@@ -242,12 +268,21 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
       subCategory: sub,
       barcode: barcode ?? null,
       price,
-      stock: stock ?? 0,
+      stock: initialStock,
       trackInventory: trackInventory !== false,
       volumeTieringEnabled: vol,
       volumeTiers: v.tiers,
       ...(labour !== undefined ? { jobCardLabourPerUnit: labour } : {}),
     })
+    if (initialStock !== 0) {
+      await recordStockAdjustment({
+        req,
+        productId: product._id,
+        productSku: normalizedSku,
+        fromStock: 0,
+        toStock: initialStock,
+      })
+    }
     res.status(201).json(product)
   } catch (e) {
     next(e)
@@ -320,22 +355,32 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       res.status(400).json({ message: 'No fields to update' })
       return
     }
+
+    const needsExisting =
+      stock !== undefined ||
+      price !== undefined ||
+      volumeTieringEnabled !== undefined ||
+      volumeTiers !== undefined
+    let existing: ProductLean | null = null
+    if (needsExisting) {
+      existing = (await Product.findById(req.params.id).lean()) as ProductLean | null
+      if (!existing) {
+        res.status(404).json({ message: 'Product not found' })
+        return
+      }
+    }
+
     if (
       price !== undefined ||
       volumeTieringEnabled !== undefined ||
       volumeTiers !== undefined
     ) {
-      const existing = await Product.findById(req.params.id).lean()
-      if (!existing) {
-        res.status(404).json({ message: 'Product not found' })
-        return
-      }
-      const nextPrice = price !== undefined ? Number(price) : existing.price ?? 0
+      const nextPrice = price !== undefined ? Number(price) : Number(existing!.price ?? 0)
       const nextVol =
         volumeTieringEnabled !== undefined
           ? Boolean(volumeTieringEnabled)
-          : Boolean(existing.volumeTieringEnabled)
-      const nextTiersRaw = volumeTiers !== undefined ? volumeTiers : existing.volumeTiers
+          : Boolean(existing!.volumeTieringEnabled)
+      const nextTiersRaw = volumeTiers !== undefined ? volumeTiers : existing!.volumeTiers
       const v = validateVolumeTiers(nextPrice, nextVol, nextTiersRaw)
       if (!v.ok) {
         res.status(400).json({ message: v.message })
@@ -344,6 +389,19 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       $set.volumeTieringEnabled = nextVol
       $set.volumeTiers = v.tiers
     }
+
+    if (stock !== undefined && existing) {
+      const fromStock = Number(existing.stock ?? 0)
+      const toStock = Math.floor(Number(stock)) || 0
+      await recordStockAdjustment({
+        req,
+        productId: existing._id as Types.ObjectId,
+        productSku: String(existing.sku ?? ''),
+        fromStock,
+        toStock,
+      })
+    }
+
     const product = await Product.findByIdAndUpdate(req.params.id, { $set }, { new: true, runValidators: true }).lean()
     if (!product) {
       res.status(404).json({ message: 'Product not found' })
