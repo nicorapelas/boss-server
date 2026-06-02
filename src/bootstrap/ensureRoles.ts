@@ -50,6 +50,10 @@ export async function ensureRolesAndMigrateUsers(): Promise<void> {
     { slug: 'manager' },
     { $addToSet: { permissions: { $each: ['suppliers.read', 'suppliers.write'] } } },
   )
+  await Role.updateOne(
+    { slug: 'manager' },
+    { $addToSet: { permissions: { $each: ['loyalty.access', 'loyalty.admin'] } } },
+  )
 
   const raw = User.collection
   await raw.updateMany(

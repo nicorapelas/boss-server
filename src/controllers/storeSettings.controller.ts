@@ -1,9 +1,10 @@
 import type { NextFunction, Request, Response } from 'express'
-import { StoreSettings } from '../models/StoreSettings.js'
+import { StoreSettings, type IStoreSettings } from '../models/StoreSettings.js'
 import { DEFAULT_STORE_NAME } from '../brand.js'
 import { customerDisplayFromBody, mergeCustomerDisplay } from '../utils/customerDisplaySettings.js'
 import { bumpCatalogRevision } from '../services/catalogRevision.js'
 import { mergeDefaultProductPresets } from '../utils/productPresets.js'
+import { DEFAULT_LOYALTY_PROGRAM, loyaltyProgramFromSettings } from '../utils/loyaltyProgram.js'
 
 export const DEFAULT_STORE_SETTINGS_DOC = {
   _id: 'default' as const,
@@ -30,6 +31,7 @@ export const DEFAULT_STORE_SETTINGS_DOC = {
     theme: { backgroundColor: '#0f1419', accentColor: '#3b82f6' },
     footerText: 'All prices include VAT',
   },
+  loyaltyProgram: DEFAULT_LOYALTY_PROGRAM,
   catalogRevision: 0,
   catalogPushedAt: null as string | null,
 }
@@ -43,6 +45,7 @@ function withMergedSettings(doc: {
     ...doc,
     productPresets: mergeDefaultProductPresets(doc.productPresets),
     customerDisplay: mergeCustomerDisplay(doc.customerDisplay),
+    loyaltyProgram: loyaltyProgramFromSettings(doc as unknown as IStoreSettings),
   }
 }
 
@@ -109,6 +112,7 @@ export async function updateStoreSettings(req: Request, res: Response, next: Nex
       defaultExpiryMonths: number
       vatRate: number
       customerDisplay: unknown
+      loyaltyProgram: unknown
     }>
     const set: Record<string, unknown> = {}
     if (body.storeName !== undefined) set.storeName = String(body.storeName).trim()
@@ -142,6 +146,18 @@ export async function updateStoreSettings(req: Request, res: Response, next: Nex
     }
     const cd = customerDisplayFromBody(body.customerDisplay)
     if (cd) set.customerDisplay = cd
+    if (body.loyaltyProgram !== undefined && body.loyaltyProgram && typeof body.loyaltyProgram === 'object') {
+      const o = body.loyaltyProgram as Record<string, unknown>
+      set.loyaltyProgram = loyaltyProgramFromSettings({
+        loyaltyProgram: {
+          enabled: o.enabled === true,
+          pointsPerRand: Number(o.pointsPerRand),
+          redeemValuePerPoint: Number(o.redeemValuePerPoint),
+          minRedeemPoints: Number(o.minRedeemPoints),
+          maxRedeemPercent: Number(o.maxRedeemPercent),
+        },
+      })
+    }
     const updated = await StoreSettings.findOneAndUpdate(
       { _id: 'default' },
       { $set: set },

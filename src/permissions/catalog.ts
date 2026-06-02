@@ -15,6 +15,8 @@ export const PERMISSION_CATALOG: { id: string; label: string }[] = [
   { id: 'presets.write', label: 'Edit product presets (shared layout)' },
   { id: 'financials.read', label: 'View financials summary' },
   { id: 'store_credit.access', label: 'Store credit / vouchers (Back Office)' },
+  { id: 'loyalty.access', label: 'Loyalty members (view)' },
+  { id: 'loyalty.admin', label: 'Loyalty admin (adjust points, change phone)' },
   { id: 'house_accounts.access', label: 'House accounts (Back Office)' },
   { id: 'laybys.use', label: 'Lay-bys: create, pay, complete (POS)' },
   { id: 'laybys.admin', label: 'Lay-bys: list all, cancel agreements' },
@@ -53,6 +55,8 @@ export const MANAGER_PERMISSION_IDS: string[] = [
   'laybys.admin',
   'suppliers.read',
   'suppliers.write',
+  'loyalty.access',
+  'loyalty.admin',
 ]
 
 /** Superuser token marker (small JWT). */

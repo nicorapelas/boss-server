@@ -21,9 +21,39 @@ import {
 } from '../utils/managerStockOverride.js'
 import { userHasRegisterManager } from '../utils/userPermissions.js'
 import { expandForProduct, productHasVolumeTiering } from '../utils/volumePrice.js'
+import { LoyaltyMember } from '../models/LoyaltyMember.js'
+import {
+  applyLoyaltyOnSale,
+  ensureLoyaltyAppliedForSale,
+  maskPhone,
+  planLoyaltyForSale,
+  reverseLoyaltyForRefund,
+} from '../services/loyalty.service.js'
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100
+}
+
+async function appendLoyaltyResponseFields(
+  payload: Record<string, unknown>,
+  sale: {
+    loyaltyMemberId?: Types.ObjectId | null
+    loyaltyPhone?: string | null
+    loyaltyPointsEarned?: number
+    loyaltyPointsRedeemed?: number
+    loyaltyDiscountAmount?: number
+  },
+) {
+  if (!sale.loyaltyMemberId && !sale.loyaltyPhone) return
+  const phone = sale.loyaltyPhone ? normalizePhone(String(sale.loyaltyPhone)) : ''
+  if (phone) payload.loyaltyPhoneMasked = maskPhone(phone)
+  if (sale.loyaltyMemberId) {
+    const memberAfter = await LoyaltyMember.findById(sale.loyaltyMemberId).select('pointsBalance').lean()
+    payload.loyaltyPointsBalanceAfter = Math.max(0, Math.floor(Number(memberAfter?.pointsBalance ?? 0)))
+  }
+  if (sale.loyaltyPointsEarned != null) payload.loyaltyPointsEarned = sale.loyaltyPointsEarned
+  if (sale.loyaltyPointsRedeemed != null) payload.loyaltyPointsRedeemed = sale.loyaltyPointsRedeemed
+  if (sale.loyaltyDiscountAmount != null) payload.loyaltyDiscountAmount = sale.loyaltyDiscountAmount
 }
 
 function normalizePhone(raw: string): string {
@@ -214,6 +244,8 @@ export async function createSale(req: Request, res: Response, next: NextFunction
       houseAccountId: rawHouseAccountId,
       purchaseOrderNumber: rawPoNumber,
       tillCode: rawTillCode,
+      loyaltyPhone: rawLoyaltyPhone,
+      loyaltyPointsRedeem: rawLoyaltyPointsRedeem,
     } = req.body as {
       items?: BodyItem[]
       paymentMethod?: string
@@ -227,6 +259,8 @@ export async function createSale(req: Request, res: Response, next: NextFunction
       houseAccountId?: string
       purchaseOrderNumber?: string
       tillCode?: string
+      loyaltyPhone?: string
+      loyaltyPointsRedeem?: number
     }
     const openTabId = rawOpenTabId?.trim() || undefined
     const quoteIdRaw = typeof rawQuoteId === 'string' ? rawQuoteId.trim() : ''
@@ -259,9 +293,21 @@ export async function createSale(req: Request, res: Response, next: NextFunction
     }
 
     if (clientLocalId) {
-      const existing = await Sale.findOne({ clientLocalId })
+      const existing = await Sale.findOne({ clientLocalId }).lean()
       if (existing) {
-        res.status(200).json(existing)
+        try {
+          await ensureLoyaltyAppliedForSale(existing, userId)
+        } catch (loyaltyRetryErr) {
+          const msg = loyaltyRetryErr instanceof Error ? loyaltyRetryErr.message : ''
+          if (msg === 'INSUFFICIENT_LOYALTY_POINTS') {
+            res.status(400).json({ message: 'Insufficient loyalty points' })
+            return
+          }
+          throw loyaltyRetryErr
+        }
+        const payload: Record<string, unknown> = { ...existing }
+        await appendLoyaltyResponseFields(payload, existing)
+        res.status(200).json(payload)
         return
       }
     }
@@ -551,7 +597,36 @@ export async function createSale(req: Request, res: Response, next: NextFunction
       }
     }
 
-    const covered = round2(cashAmount + cardAmount + storeCreditAmount + onAccountAmount)
+    const loyaltyPhoneInput = rawLoyaltyPhone ? normalizePhone(String(rawLoyaltyPhone)) : ''
+    let loyaltyPlan: Awaited<ReturnType<typeof planLoyaltyForSale>> = null
+    if (loyaltyPhoneInput) {
+      try {
+        loyaltyPlan = await planLoyaltyForSale({
+          phone: loyaltyPhoneInput,
+          saleTotal: total,
+          pointsToRedeem: Math.max(0, Math.floor(Number(rawLoyaltyPointsRedeem ?? 0) || 0)),
+          earnEligible: onAccountAmount <= 0.005,
+        })
+      } catch (loyaltyErr) {
+        const msg = loyaltyErr instanceof Error ? loyaltyErr.message : ''
+        if (msg === 'LOYALTY_MIN_REDEEM') {
+          res.status(400).json({ message: 'Minimum loyalty points not met for redemption' })
+          return
+        }
+        if (msg === 'LOYALTY_BLOCKED') {
+          res.status(400).json({ message: 'Loyalty account is blocked' })
+          return
+        }
+        if (msg === 'INVALID_PHONE') {
+          res.status(400).json({ message: 'Invalid loyalty phone number' })
+          return
+        }
+        throw loyaltyErr
+      }
+    }
+    const loyaltyDiscountAmount = loyaltyPlan?.loyaltyDiscountAmount ?? 0
+
+    const covered = round2(cashAmount + cardAmount + storeCreditAmount + onAccountAmount + loyaltyDiscountAmount)
     if (Math.abs(covered - total) > 0.02) {
       res.status(400).json({ message: 'Payment total must match sale total' })
       return
@@ -571,7 +646,8 @@ export async function createSale(req: Request, res: Response, next: NextFunction
     const hasCard = cardAmount > 0.005
     const hasSc = storeCreditAmount > 0.005
     const hasOa = onAccountAmount > 0.005
-    const tenderKinds = [hasCash, hasCard, hasSc, hasOa].filter(Boolean).length
+    const hasLoyalty = loyaltyDiscountAmount > 0.005
+    const tenderKinds = [hasCash, hasCard, hasSc, hasOa, hasLoyalty].filter(Boolean).length
     const resolvedMethod =
       paymentMethod?.trim() ||
       (covered > 0
@@ -673,12 +749,22 @@ export async function createSale(req: Request, res: Response, next: NextFunction
               purchaseOrderNumber: hasOa ? purchaseOrderNumber : undefined,
               tillCode: tillCode || undefined,
               shiftId: openShift?._id ?? undefined,
+              loyaltyPhone: loyaltyPlan?.phone,
+              loyaltyMemberId: loyaltyPlan?.memberId,
+              loyaltyPointsEarned: loyaltyPlan && loyaltyPlan.pointsEarned > 0 ? loyaltyPlan.pointsEarned : undefined,
+              loyaltyPointsRedeemed:
+                loyaltyPlan && loyaltyPlan.pointsRedeemed > 0 ? loyaltyPlan.pointsRedeemed : undefined,
+              loyaltyDiscountAmount: loyaltyDiscountAmount > 0 ? loyaltyDiscountAmount : undefined,
             },
           ],
           session ? { session } : undefined,
         )
         sale = created[0] ?? null
         if (!sale) throw new Error('SALE_CREATE_FAILED')
+
+        if (loyaltyPlan) {
+          await applyLoyaltyOnSale(loyaltyPlan, sale._id, userId, session)
+        }
 
         if (quoteId) {
           const updated = await Quote.findOneAndUpdate(
@@ -760,6 +846,10 @@ export async function createSale(req: Request, res: Response, next: NextFunction
         res.status(400).json({ message: 'Insufficient store credit' })
         return
       }
+      if (msg === 'INSUFFICIENT_LOYALTY_POINTS') {
+        res.status(400).json({ message: 'Insufficient loyalty points' })
+        return
+      }
       if (msg === 'QUOTE_CONFLICT') {
         res.status(409).json({ message: 'Quote was already converted or cancelled' })
         return
@@ -779,6 +869,15 @@ export async function createSale(req: Request, res: Response, next: NextFunction
       payload.storeCreditPhone = scPhone
       const acctAfter = await StoreCreditAccount.findOne({ phone: scPhone }).select('balance').lean()
       payload.storeCreditBalanceAfter = round2(Number(acctAfter?.balance ?? 0))
+    }
+    if (loyaltyPlan) {
+      await appendLoyaltyResponseFields(payload, {
+        loyaltyMemberId: loyaltyPlan.memberId,
+        loyaltyPhone: loyaltyPlan.phone,
+        loyaltyPointsEarned: loyaltyPlan.pointsEarned,
+        loyaltyPointsRedeemed: loyaltyPlan.pointsRedeemed,
+        loyaltyDiscountAmount: loyaltyDiscountAmount > 0 ? loyaltyDiscountAmount : undefined,
+      })
     }
     res.status(201).json(payload)
   } catch (e) {
@@ -1202,6 +1301,22 @@ export async function refundSale(req: Request, res: Response, next: NextFunction
     sale.refundPayoutMethod = payoutMethodNorm
     sale.refundPayoutAmount = cumulativeRefund
     await sale.save()
+
+    const saleTotal = Number(sale.total ?? 0)
+    if (saleTotal > 0.005 && (sale.loyaltyMemberId || sale.loyaltyPhone)) {
+      await reverseLoyaltyForRefund({
+        sale: {
+          _id: new Types.ObjectId(String(sale._id)),
+          loyaltyMemberId: sale.loyaltyMemberId ?? undefined,
+          loyaltyPhone: sale.loyaltyPhone ?? undefined,
+          loyaltyPointsEarned: sale.loyaltyPointsEarned,
+          loyaltyPointsRedeemed: sale.loyaltyPointsRedeemed,
+          total: saleTotal,
+        },
+        refundFraction: refundTotal / saleTotal,
+        userId: String(req.user.id),
+      })
+    }
 
     const out = await Sale.findById(sale._id)
       .populate({ path: 'cashier', select: 'email displayName', populate: { path: 'roleId', select: 'slug' } })

@@ -15,6 +15,7 @@ import { shiftsRouter } from './shifts.routes.js'
 import { shopAssistCartsRouter } from './shopAssistCarts.routes.js'
 import { salesRouter } from './sales.routes.js'
 import { storeCreditRouter } from './storeCredit.routes.js'
+import { loyaltyRouter } from './loyalty.routes.js'
 import { tabsRouter } from './tabs.routes.js'
 import { storeBackupRouter } from './storeBackup.routes.js'
 import { usersRouter } from './users.routes.js'
@@ -37,6 +38,7 @@ export function apiRouter(accessSecret: string) {
   r.use('/financials', financialsRouter(requireAuth))
   r.use('/settings', settingsRouter(requireAuth))
   r.use('/store-credit', storeCreditRouter(requireAuth))
+  r.use('/loyalty', loyaltyRouter(requireAuth))
   r.use('/house-accounts', houseAccountsRouter(requireAuth))
   r.use('/lay-bys', laybyRouter(requireAuth))
   r.use('/quotes', quotesRouter(requireAuth))

@@ -48,6 +48,14 @@ export type ICustomerDisplayConfig = {
   footerText: string
 }
 
+export type ILoyaltyProgramConfig = {
+  enabled: boolean
+  pointsPerRand: number
+  redeemValuePerPoint: number
+  minRedeemPoints: number
+  maxRedeemPercent: number
+}
+
 const customerDisplayIdleSchema = new Schema(
   {
     headline: { type: String, trim: true, default: 'Welcome' },
@@ -75,6 +83,17 @@ const customerDisplaySchema = new Schema(
   { _id: false },
 )
 
+const loyaltyProgramSchema = new Schema(
+  {
+    enabled: { type: Boolean, default: false },
+    pointsPerRand: { type: Number, default: 1, min: 0 },
+    redeemValuePerPoint: { type: Number, default: 0.1, min: 0 },
+    minRedeemPoints: { type: Number, default: 100, min: 0 },
+    maxRedeemPercent: { type: Number, default: 50, min: 0, max: 100 },
+  },
+  { _id: false },
+)
+
 /** Singleton POS / receipt / lay-by settings (one document). */
 export interface IStoreSettings {
   _id: string
@@ -98,6 +117,8 @@ export interface IStoreSettings {
   productPresets?: IProductPresetsState
   /** Customer-facing second screen (idle content when POS logged out). */
   customerDisplay?: ICustomerDisplayConfig
+  /** Phone-based loyalty program rules. */
+  loyaltyProgram?: ILoyaltyProgramConfig
   /** Incremented when Back Office requests all tills to refresh product catalog. */
   catalogRevision: number
   /** ISO timestamp of last catalog push (informational). */
@@ -131,6 +152,16 @@ const storeSettingsSchema = new Schema<IStoreSettings>(
         idle: { headline: 'Welcome', subtext: '', imageUrl: '' },
         theme: { backgroundColor: '#0f1419', accentColor: '#3b82f6' },
         footerText: 'All prices include VAT',
+      }),
+    },
+    loyaltyProgram: {
+      type: loyaltyProgramSchema,
+      default: () => ({
+        enabled: false,
+        pointsPerRand: 1,
+        redeemValuePerPoint: 0.1,
+        minRedeemPoints: 100,
+        maxRedeemPercent: 50,
       }),
     },
     catalogRevision: { type: Number, default: 0, min: 0 },

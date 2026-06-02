@@ -79,6 +79,13 @@ export interface ISale {
   refundPayoutMethod?: 'cash' | 'card' | 'store_credit'
   /** Amount settled via chosen payout method (full sale refund). */
   refundPayoutAmount?: number
+  /** Normalized loyalty member phone snapshot. */
+  loyaltyPhone?: string | null
+  loyaltyMemberId?: Types.ObjectId | null
+  loyaltyPointsEarned?: number
+  loyaltyPointsRedeemed?: number
+  /** Rand discount from redeemed loyalty points (counts toward payment coverage). */
+  loyaltyDiscountAmount?: number
 }
 
 const saleLineSchema = new Schema<ISaleLine>(
@@ -132,6 +139,11 @@ const saleSchema = new Schema<ISale>(
     refundNote: { type: String, trim: true },
     refundPayoutMethod: { type: String, enum: ['cash', 'card', 'store_credit'], trim: true },
     refundPayoutAmount: { type: Number, min: 0 },
+    loyaltyPhone: { type: String, trim: true, sparse: true, index: true },
+    loyaltyMemberId: { type: Schema.Types.ObjectId, ref: 'LoyaltyMember', default: null, sparse: true, index: true },
+    loyaltyPointsEarned: { type: Number, min: 0 },
+    loyaltyPointsRedeemed: { type: Number, min: 0 },
+    loyaltyDiscountAmount: { type: Number, min: 0 },
     legacy: {
       source: { type: String, enum: ['vector'] },
       receiptNo: { type: Number },
