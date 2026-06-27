@@ -3,3 +3,7 @@ dist
 .env
 *.log
 data/
+
+# Local server config (secrets, machine-specific). Copy from *.example.json on setup.
+config/*
+!config/*.example.json

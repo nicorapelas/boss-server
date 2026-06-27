@@ -6,6 +6,7 @@ export const DEFAULT_CUSTOMER_DISPLAY: ICustomerDisplayConfig = {
     headline: 'Welcome',
     subtext: '',
     imageUrl: '',
+    idleImageRevision: 0,
   },
   theme: {
     backgroundColor: '#0f1419',
@@ -37,6 +38,10 @@ export function mergeCustomerDisplay(raw: unknown): ICustomerDisplayConfig {
       headline: trim(idleRaw.headline, 120) || d.idle.headline,
       subtext: trim(idleRaw.subtext, 400),
       imageUrl: trim(idleRaw.imageUrl, 2000),
+      idleImageRevision:
+        Number.isFinite(Number(idleRaw.idleImageRevision)) && Number(idleRaw.idleImageRevision) > 0
+          ? Math.min(Math.floor(Number(idleRaw.idleImageRevision)), 999_999)
+          : 0,
     },
     theme: {
       backgroundColor: hexColor(themeRaw.backgroundColor, d.theme.backgroundColor),

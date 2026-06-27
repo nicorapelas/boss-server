@@ -45,6 +45,7 @@ type HouseAccountProfileInput = {
   contactPerson?: string
   email?: string
   vatNumber?: string
+  companyRegistrationNumber?: string
   addressLines?: string[] | string
   paymentTerms?: string
   notes?: string
@@ -55,6 +56,7 @@ function profileFromBody(body: HouseAccountProfileInput) {
     contactPerson: trimOptional(body.contactPerson, 120),
     email: trimOptional(body.email, 160).toLowerCase(),
     vatNumber: trimOptional(body.vatNumber, 32),
+    companyRegistrationNumber: trimOptional(body.companyRegistrationNumber, 32),
     addressLines: parseAddressLines(body.addressLines),
     paymentTerms: parsePaymentTerms(body.paymentTerms),
     notes: trimOptional(body.notes, 2000),
@@ -78,6 +80,7 @@ export async function searchHouseAccounts(req: Request, res: Response, next: Nex
         { contactPerson: rx },
         { email: rx },
         { vatNumber: rx },
+        { companyRegistrationNumber: rx },
       ]
     }
     const list = await HouseAccount.find(filter)
@@ -181,6 +184,9 @@ export async function updateHouseAccount(req: Request, res: Response, next: Next
     if (body.contactPerson !== undefined) set.contactPerson = trimOptional(body.contactPerson, 120)
     if (body.email !== undefined) set.email = trimOptional(body.email, 160).toLowerCase()
     if (body.vatNumber !== undefined) set.vatNumber = trimOptional(body.vatNumber, 32)
+    if (body.companyRegistrationNumber !== undefined) {
+      set.companyRegistrationNumber = trimOptional(body.companyRegistrationNumber, 32)
+    }
     if (body.addressLines !== undefined) set.addressLines = parseAddressLines(body.addressLines)
     if (body.paymentTerms !== undefined) set.paymentTerms = parsePaymentTerms(body.paymentTerms)
     if (body.notes !== undefined) set.notes = trimOptional(body.notes, 2000)

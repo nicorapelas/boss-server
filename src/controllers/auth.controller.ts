@@ -4,11 +4,16 @@ import { User } from '../models/User.js'
 import {
   AuthError,
   loginByBadge,
+  loginByFace,
   loginUser,
   logoutUser,
   refreshSession,
   registerUser,
 } from '../services/auth.service.js'
+import {
+  verifyPosManagerByBadge,
+  verifyPosManagerByFace,
+} from '../services/managerVerify.service.js'
 
 function secrets(req: Request) {
   return {
@@ -49,6 +54,25 @@ export async function login(req: Request, res: Response, next: NextFunction) {
     }
     const { access, refresh } = secrets(req)
     const result = await loginUser(email, password, access, refresh)
+    res.json(result)
+  } catch (e) {
+    if (e instanceof AuthError) {
+      res.status(e.status).json({ message: e.message })
+      return
+    }
+    next(e)
+  }
+}
+
+export async function loginFace(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { embedding } = req.body as { embedding?: unknown }
+    if (!embedding) {
+      res.status(400).json({ message: 'embedding required' })
+      return
+    }
+    const { access, refresh } = secrets(req)
+    const result = await loginByFace(embedding, access, refresh)
     res.json(result)
   } catch (e) {
     if (e instanceof AuthError) {
@@ -106,6 +130,42 @@ export async function logout(req: Request, res: Response, next: NextFunction) {
     await logoutUser(req.user.id)
     res.status(204).end()
   } catch (e) {
+    next(e)
+  }
+}
+
+export async function verifyManagerBadge(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { badgeCode } = req.body as { badgeCode?: string }
+    if (!badgeCode?.trim()) {
+      res.status(400).json({ message: 'badgeCode required' })
+      return
+    }
+    const approver = await verifyPosManagerByBadge(badgeCode)
+    res.json({ approver })
+  } catch (e) {
+    if (e instanceof AuthError) {
+      res.status(e.status).json({ message: e.message })
+      return
+    }
+    next(e)
+  }
+}
+
+export async function verifyManagerFace(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { embedding } = req.body as { embedding?: unknown }
+    if (!embedding) {
+      res.status(400).json({ message: 'embedding required' })
+      return
+    }
+    const approver = await verifyPosManagerByFace(embedding)
+    res.json({ approver })
+  } catch (e) {
+    if (e instanceof AuthError) {
+      res.status(e.status).json({ message: e.message })
+      return
+    }
     next(e)
   }
 }

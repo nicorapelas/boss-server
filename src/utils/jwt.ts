@@ -1,4 +1,8 @@
 import jwt, { type SignOptions } from 'jsonwebtoken'
+import {
+  ACCESS_TOKEN_EXPIRES_IN,
+  REFRESH_TOKEN_EXPIRES_IN,
+} from '../config/authSession.js'
 
 export type AccessPayload = {
   sub: string
@@ -13,7 +17,7 @@ export type RefreshPayload = { sub: string; typ: 'refresh'; ver: number }
 export function signAccessToken(
   user: { id: string; email: string; role: string; permissions: string[] },
   secret: string,
-  expiresIn: SignOptions['expiresIn'] = '15m',
+  expiresIn: SignOptions['expiresIn'] = ACCESS_TOKEN_EXPIRES_IN,
 ) {
   const payload: AccessPayload = {
     sub: user.id,
@@ -26,7 +30,11 @@ export function signAccessToken(
   return jwt.sign(payload, secret, options)
 }
 
-export function signRefreshToken(userId: string, secret: string, expiresIn: SignOptions['expiresIn'] = '7d') {
+export function signRefreshToken(
+  userId: string,
+  secret: string,
+  expiresIn: SignOptions['expiresIn'] = REFRESH_TOKEN_EXPIRES_IN,
+) {
   const payload: RefreshPayload = { sub: userId, typ: 'refresh', ver: 1 }
   const options: SignOptions = { expiresIn }
   return jwt.sign(payload, secret, options)

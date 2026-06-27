@@ -28,7 +28,12 @@ export interface ILayByCancellation {
   mode: 'full_refund' | 'percent_refund' | 'store_credit'
   percent?: number
   refundAmount?: number
+  refundCash?: number
+  refundCard?: number
+  storeCreditRestored?: number
   storeCreditIssued?: number
+  tillCode?: string
+  shiftId?: Types.ObjectId | null
   at: Date
   by: Types.ObjectId
 }
@@ -86,7 +91,12 @@ const cancellationSchema = new Schema<ILayByCancellation>(
     mode: { type: String, enum: ['full_refund', 'percent_refund', 'store_credit'], required: true },
     percent: { type: Number, min: 0, max: 100 },
     refundAmount: { type: Number, min: 0 },
+    refundCash: { type: Number, min: 0 },
+    refundCard: { type: Number, min: 0 },
+    storeCreditRestored: { type: Number, min: 0 },
     storeCreditIssued: { type: Number, min: 0 },
+    tillCode: { type: String, trim: true, uppercase: true },
+    shiftId: { type: Schema.Types.ObjectId, ref: 'ShiftSession', default: null, sparse: true },
     at: { type: Date, required: true },
     by: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   },

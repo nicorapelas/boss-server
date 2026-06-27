@@ -3,6 +3,7 @@ import AdmZip from 'adm-zip'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { bumpCatalogRevision } from '../services/catalogRevision.js'
 import { deleteEntireCatalog } from '../services/catalogDelete.js'
 import {
   importVectorProductsFromDir,
@@ -74,12 +75,14 @@ export async function runVectorImport(req: Request, res: Response, next: NextFun
 
     const importResult = await importVectorProductsFromDir(extractDir, { dryRun: false })
     const skuNormalize = normalizeSku ? await normalizeVectorProductSkus() : undefined
+    const catalogRevision = await bumpCatalogRevision()
 
     res.json({
       message: 'Vector catalog import completed.',
       catalogDelete,
       import: importResult,
       skuNormalize,
+      catalogRevision,
     })
   } catch (e) {
     next(e)
@@ -97,9 +100,11 @@ export async function deleteCatalog(req: Request, res: Response, next: NextFunct
       return
     }
     const result = await deleteEntireCatalog()
+    const catalogRevision = await bumpCatalogRevision()
     res.json({
       message: 'All products, supplier offers, photos, and preset links were removed.',
       ...result,
+      catalogRevision,
     })
   } catch (e) {
     next(e)

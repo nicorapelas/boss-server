@@ -1,4 +1,4 @@
-import mongoose, { Schema } from 'mongoose'
+import mongoose, { Schema, type Types } from 'mongoose'
 
 const presetEntrySchema = new Schema(
   {
@@ -34,6 +34,8 @@ export type ICustomerDisplayIdle = {
   headline: string
   subtext: string
   imageUrl: string
+  /** Uploaded idle banner on server; 0 = use imageUrl or none. */
+  idleImageRevision: number
 }
 
 export type ICustomerDisplayTheme = {
@@ -56,11 +58,33 @@ export type ILoyaltyProgramConfig = {
   maxRedeemPercent: number
 }
 
+export type IPosFaceLoginConsent = {
+  version: string
+  acceptedAt: Date
+  acceptedBy: Types.ObjectId
+}
+
+export type IStaffAttendanceSettings = {
+  enabled: boolean
+  logoutClockOutPromptEnabled: boolean
+  logoutPromptAfterMinutes: number
+  autoClockOutEnabled?: boolean
+  autoClockOutTime?: string
+}
+
+export type ICashRoundingSettings = {
+  enabled: boolean
+  /** 10, 20, or 50 — smallest cash coin denomination for rounding. */
+  incrementCents: 10 | 20 | 50
+  mode: 'nearest' | 'down' | 'up'
+}
+
 const customerDisplayIdleSchema = new Schema(
   {
     headline: { type: String, trim: true, default: 'Welcome' },
     subtext: { type: String, trim: true, default: '' },
     imageUrl: { type: String, trim: true, default: '' },
+    idleImageRevision: { type: Number, default: 0, min: 0 },
   },
   { _id: false },
 )
@@ -79,6 +103,35 @@ const customerDisplaySchema = new Schema(
     idle: { type: customerDisplayIdleSchema, default: () => ({}) },
     theme: { type: customerDisplayThemeSchema, default: () => ({}) },
     footerText: { type: String, trim: true, default: 'All prices include VAT' },
+  },
+  { _id: false },
+)
+
+const posFaceLoginConsentSchema = new Schema(
+  {
+    version: { type: String, required: true, trim: true },
+    acceptedAt: { type: Date, required: true },
+    acceptedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  },
+  { _id: false },
+)
+
+const staffAttendanceSchema = new Schema(
+  {
+    enabled: { type: Boolean, default: true },
+    logoutClockOutPromptEnabled: { type: Boolean, default: true },
+    logoutPromptAfterMinutes: { type: Number, default: 0, min: 0, max: 24 * 60 },
+    autoClockOutEnabled: { type: Boolean, default: false },
+    autoClockOutTime: { type: String, trim: true, default: '18:00' },
+  },
+  { _id: false },
+)
+
+const cashRoundingSchema = new Schema(
+  {
+    enabled: { type: Boolean, default: false },
+    incrementCents: { type: Number, enum: [10, 20, 50], default: 10 },
+    mode: { type: String, enum: ['nearest', 'down', 'up'], default: 'nearest' },
   },
   { _id: false },
 )
@@ -119,6 +172,16 @@ export interface IStoreSettings {
   customerDisplay?: ICustomerDisplayConfig
   /** Phone-based loyalty program rules. */
   loyaltyProgram?: ILoyaltyProgramConfig
+  /** POS staff login: badge scan (default) or face recognition. */
+  posLoginMethod?: 'badge' | 'face'
+  /** Store operator acknowledgement before enabling face login at tills. */
+  posFaceLoginConsent?: IPosFaceLoginConsent | null
+  /** Staff clock in/out at POS and till sign-out prompts. */
+  staffAttendance?: IStaffAttendanceSettings
+  /** Cash rounding for till totals (SA: no 5c coins). */
+  cashRounding?: ICashRoundingSettings
+  /** Days after sale date that exchanges are allowed (0 = no limit). Admin may bypass when expired. */
+  exchangeEligibilityDays?: number
   /** Incremented when Back Office requests all tills to refresh product catalog. */
   catalogRevision: number
   /** ISO timestamp of last catalog push (informational). */
@@ -149,7 +212,7 @@ const storeSettingsSchema = new Schema<IStoreSettings>(
       type: customerDisplaySchema,
       default: () => ({
         enabled: true,
-        idle: { headline: 'Welcome', subtext: '', imageUrl: '' },
+        idle: { headline: 'Welcome', subtext: '', imageUrl: '', idleImageRevision: 0 },
         theme: { backgroundColor: '#0f1419', accentColor: '#3b82f6' },
         footerText: 'All prices include VAT',
       }),
@@ -164,8 +227,27 @@ const storeSettingsSchema = new Schema<IStoreSettings>(
         maxRedeemPercent: 50,
       }),
     },
+    posLoginMethod: { type: String, enum: ['badge', 'face'], default: 'badge' },
+    posFaceLoginConsent: { type: posFaceLoginConsentSchema, default: null },
+    staffAttendance: {
+      type: staffAttendanceSchema,
+      default: () => ({
+        enabled: true,
+        logoutClockOutPromptEnabled: true,
+        logoutPromptAfterMinutes: 0,
+      }),
+    },
+    cashRounding: {
+      type: cashRoundingSchema,
+      default: () => ({
+        enabled: false,
+        incrementCents: 10,
+        mode: 'nearest',
+      }),
+    },
     catalogRevision: { type: Number, default: 0, min: 0 },
     catalogPushedAt: { type: String, default: null },
+    exchangeEligibilityDays: { type: Number, default: 30, min: 0, max: 3650 },
   },
   { _id: false },
 )

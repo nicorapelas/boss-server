@@ -10,6 +10,10 @@ import { quotesRouter } from './quotes.routes.js'
 import { rolesRouter } from './roles.routes.js'
 import { eventsRouter } from './events.routes.js'
 import { supplierOffersRouter, suppliersRouter } from './suppliers.routes.js'
+import { manualReturnsRouter } from './manualReturns.routes.js'
+import { getPosLoginConfig } from '../controllers/storeSettings.controller.js'
+import { getStoreIdleImage } from '../controllers/storeIdleImage.controller.js'
+import { attendanceRouter } from './attendance.routes.js'
 import { settingsRouter } from './settings.routes.js'
 import { shiftsRouter } from './shifts.routes.js'
 import { shopAssistCartsRouter } from './shopAssistCarts.routes.js'
@@ -19,6 +23,7 @@ import { loyaltyRouter } from './loyalty.routes.js'
 import { tabsRouter } from './tabs.routes.js'
 import { storeBackupRouter } from './storeBackup.routes.js'
 import { usersRouter } from './users.routes.js'
+import { terminalsRouter } from './terminals.routes.js'
 
 export function apiRouter(accessSecret: string) {
   const requireAuth = buildRequireAuth(accessSecret)
@@ -26,17 +31,22 @@ export function apiRouter(accessSecret: string) {
   r.get('/health', (_req, res) => {
     res.json({ ok: true })
   })
+  r.get('/settings/pos-login', getPosLoginConfig)
+  r.get('/settings/store/idle-image', getStoreIdleImage)
+  r.use('/attendance', attendanceRouter(requireAuth))
   r.use('/events', eventsRouter(requireAuth))
   r.use('/auth', authRouter(requireAuth))
   r.use('/products', productsRouter(requireAuth))
   r.use('/suppliers', suppliersRouter(requireAuth))
   r.use('/supplier-offers', supplierOffersRouter(requireAuth))
   r.use('/sales', salesRouter(requireAuth))
+  r.use('/manual-returns', manualReturnsRouter(requireAuth))
   r.use('/shop-assist-carts', shopAssistCartsRouter(requireAuth))
   r.use('/shifts', shiftsRouter(requireAuth))
   r.use('/tabs', tabsRouter(requireAuth))
   r.use('/financials', financialsRouter(requireAuth))
   r.use('/settings', settingsRouter(requireAuth))
+  r.use('/terminals', terminalsRouter(requireAuth))
   r.use('/store-credit', storeCreditRouter(requireAuth))
   r.use('/loyalty', loyaltyRouter(requireAuth))
   r.use('/house-accounts', houseAccountsRouter(requireAuth))

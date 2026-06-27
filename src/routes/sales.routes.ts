@@ -5,9 +5,12 @@ import {
   createSale,
   getSale,
   getSaleRefundPreview,
+  getSaleExchangePreview,
+  exchangeSale,
   listOfflineSyncConflicts,
   listOfflineSyncRetryRequests,
   listSales,
+  listSalesForAdjustment,
   refundSale,
   requestOfflineSyncConflictRetry,
   reportOfflineSyncConflict,
@@ -19,6 +22,12 @@ export function salesRouter(requireAuth: RequestHandler) {
   const r = Router()
   r.post('/', requireAuth, requirePermission('sales.create'), createSale)
   r.get('/', requireAuth, requirePermission('sales.read'), listSales)
+  r.get(
+    '/adjustment-lookup',
+    requireAuth,
+    requireAnyPermission('sales.read', 'sales.refund', 'sales.exchange'),
+    listSalesForAdjustment,
+  )
   r.post('/offline-conflicts', requireAuth, requirePermission('sales.create'), reportOfflineSyncConflict)
   r.get('/offline-conflicts', requireAuth, requirePermission('sales.read'), listOfflineSyncConflicts)
   r.get('/offline-conflicts/retry-requests', requireAuth, requirePermission('sales.create'), listOfflineSyncRetryRequests)
@@ -30,8 +39,10 @@ export function salesRouter(requireAuth: RequestHandler) {
     requirePermission('sales.create'),
     resolveOfflineSyncConflictByClientLocalId,
   )
-  r.get('/:id', requireAuth, requireAnyPermission('sales.read', 'sales.refund'), getSale)
+  r.get('/:id', requireAuth, requireAnyPermission('sales.read', 'sales.refund', 'sales.exchange'), getSale)
   r.get('/:id/refund-preview', requireAuth, requirePermission('sales.refund'), getSaleRefundPreview)
   r.post('/:id/refund', requireAuth, requirePermission('sales.refund'), refundSale)
+  r.get('/:id/exchange-preview', requireAuth, requirePermission('sales.exchange'), getSaleExchangePreview)
+  r.post('/:id/exchange', requireAuth, requirePermission('sales.exchange'), exchangeSale)
   return r
 }

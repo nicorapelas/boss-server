@@ -137,7 +137,6 @@ export async function createQuote(req: Request, res: Response, next: NextFunctio
         const segments = expandForProduct(p, qty)
         const lineTotal = round2(segments.reduce((s, g) => s + g.lineTotal, 0))
         const unitPrice = qty > 0 ? round2(lineTotal / qty) : catalog
-        const listUnitPrice = unitPrice < catalog - 0.0001 ? catalog : undefined
         lines.push({
           productId: p._id,
           name: p.name,
@@ -145,7 +144,6 @@ export async function createQuote(req: Request, res: Response, next: NextFunctio
           quantity: qty,
           unitPrice,
           lineTotal,
-          listUnitPrice,
         })
       } else {
         let unitPrice = catalog

@@ -9,9 +9,17 @@ import { HouseAccount, HouseAccountLedger } from '../models/HouseAccount.js'
 import { OfflineSyncConflict } from '../models/OfflineSyncConflict.js'
 import { Sale } from '../models/Sale.js'
 import { SaleRefund } from '../models/SaleRefund.js'
+import type { SaleExchangeSettlementKind } from '../models/SaleExchange.js'
+import { saleReturnProgress } from '../services/saleReturnProgress.js'
+import {
+  ExchangeError,
+  exchangeEligibilityForSale,
+  performSaleExchange,
+} from '../services/saleExchange.service.js'
 import { StoreCreditAccount, StoreCreditLedger } from '../models/StoreCreditAccount.js'
 import { hasPermission } from '../permissions/catalog.js'
 import { getOrCreateOpenShift } from './shifts.controller.js'
+import { parseCashierSignInMethod } from '../utils/cashierSignInMethod.js'
 import { canChargeAboveCatalogPrice } from '../utils/requestAuth.js'
 import { productTracksInventory } from '../utils/productInventory.js'
 import {
@@ -19,8 +27,13 @@ import {
   saleNeedsStockOverride,
   shouldRelaxStockDecrement,
 } from '../utils/managerStockOverride.js'
+import { maybeAutoClockOutOnSale } from '../services/attendance.service.js'
 import { userHasRegisterManager } from '../utils/userPermissions.js'
 import { expandForProduct, productHasVolumeTiering } from '../utils/volumePrice.js'
+import {
+  resolveCashierSoldByContext,
+  soldByFieldsForProduct,
+} from '../services/soldBySale.service.js'
 import { LoyaltyMember } from '../models/LoyaltyMember.js'
 import {
   applyLoyaltyOnSale,
@@ -29,6 +42,9 @@ import {
   planLoyaltyForSale,
   reverseLoyaltyForRefund,
 } from '../services/loyalty.service.js'
+import { ensureStoreSettingsDoc } from './storeSettings.controller.js'
+import { cashRoundingFromSettings, computeCashPaymentLeg } from '../utils/cashRounding.js'
+import type { IStoreSettings } from '../models/StoreSettings.js'
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100
@@ -184,10 +200,55 @@ type BodyItem = {
   stockOverrideApproved?: boolean
   stockOverrideScope?: 'offline' | 'online'
   stockOverrideAvailableQty?: number
+  stockOverrideApprovedByUserId?: string
+  stockOverrideApprovedByDisplayName?: string
   addedByUserId?: string
   addedByDisplayName?: string
   addedAt?: string
 }
+function saleStockOverrideFields(row: {
+  stockOverrideApproved?: boolean
+  stockOverrideScope?: 'offline' | 'online'
+  stockOverrideAvailableQty?: number
+  stockOverrideApprovedByUserId?: Types.ObjectId
+  stockOverrideApprovedByDisplayName?: string
+}) {
+  if (row.stockOverrideApproved !== true) return {}
+  return {
+    stockOverrideApproved: true as const,
+    stockOverrideScope: row.stockOverrideScope,
+    stockOverrideAvailableQty: row.stockOverrideAvailableQty,
+    ...(row.stockOverrideApprovedByUserId
+      ? { stockOverrideApprovedByUserId: row.stockOverrideApprovedByUserId }
+      : {}),
+    ...(row.stockOverrideApprovedByDisplayName
+      ? { stockOverrideApprovedByDisplayName: row.stockOverrideApprovedByDisplayName }
+      : {}),
+  }
+}
+
+function stockOverrideApproverFromBodyItem(row: BodyItem): {
+  stockOverrideApprovedByUserId?: Types.ObjectId
+  stockOverrideApprovedByDisplayName?: string
+} {
+  if (row.stockOverrideApproved !== true) return {}
+  let stockOverrideApprovedByUserId: Types.ObjectId | undefined
+  if (
+    typeof row.stockOverrideApprovedByUserId === 'string' &&
+    Types.ObjectId.isValid(row.stockOverrideApprovedByUserId)
+  ) {
+    stockOverrideApprovedByUserId = new Types.ObjectId(row.stockOverrideApprovedByUserId)
+  }
+  const dn =
+    typeof row.stockOverrideApprovedByDisplayName === 'string'
+      ? row.stockOverrideApprovedByDisplayName.trim().slice(0, 120)
+      : ''
+  return {
+    ...(stockOverrideApprovedByUserId ? { stockOverrideApprovedByUserId } : {}),
+    ...(dn ? { stockOverrideApprovedByDisplayName: dn } : {}),
+  }
+}
+
 function lineAttributionFromBodyItem(row: BodyItem): {
   addedByUserId?: Types.ObjectId
   addedByDisplayName?: string
@@ -246,6 +307,8 @@ export async function createSale(req: Request, res: Response, next: NextFunction
       tillCode: rawTillCode,
       loyaltyPhone: rawLoyaltyPhone,
       loyaltyPointsRedeem: rawLoyaltyPointsRedeem,
+      cashierSignInMethod: rawCashierSignInMethod,
+      cashRoundingAdjustment: rawCashRoundingAdjustment,
     } = req.body as {
       items?: BodyItem[]
       paymentMethod?: string
@@ -261,6 +324,13 @@ export async function createSale(req: Request, res: Response, next: NextFunction
       tillCode?: string
       loyaltyPhone?: string
       loyaltyPointsRedeem?: number
+      cashierSignInMethod?: string
+      cashRoundingAdjustment?: number
+    }
+    const cashierSignInMethod = parseCashierSignInMethod(rawCashierSignInMethod)
+    if (rawCashierSignInMethod != null && String(rawCashierSignInMethod).trim() !== '' && !cashierSignInMethod) {
+      res.status(400).json({ message: 'Invalid cashierSignInMethod' })
+      return
     }
     const openTabId = rawOpenTabId?.trim() || undefined
     const quoteIdRaw = typeof rawQuoteId === 'string' ? rawQuoteId.trim() : ''
@@ -326,6 +396,8 @@ export async function createSale(req: Request, res: Response, next: NextFunction
       addedByUserId?: Types.ObjectId
       addedByDisplayName?: string
       addedAt?: Date
+      soldByUserId?: Types.ObjectId
+      soldByDisplayName?: string
     }[] = []
 
     // NOTE: MongoDB transactions require a replica set. For local dev setups running a standalone
@@ -337,6 +409,7 @@ export async function createSale(req: Request, res: Response, next: NextFunction
       const stockOverrideScope: 'offline' | 'online' | undefined =
         row.stockOverrideScope === 'offline' ? 'offline' : row.stockOverrideScope === 'online' ? 'online' : undefined
       const attr = lineAttributionFromBodyItem(row)
+      const overrideApprover = stockOverrideApproverFromBodyItem(row)
       return {
         productId: row.productId,
         quantity: row.quantity,
@@ -348,6 +421,7 @@ export async function createSale(req: Request, res: Response, next: NextFunction
           row.stockOverrideAvailableQty !== undefined && Number.isFinite(Number(row.stockOverrideAvailableQty))
             ? round2(Math.max(0, Number(row.stockOverrideAvailableQty)))
             : undefined,
+        ...overrideApprover,
         addedByUserId: attr.addedByUserId,
         addedByDisplayName: attr.addedByDisplayName,
         addedAt: attr.addedAt,
@@ -368,6 +442,7 @@ export async function createSale(req: Request, res: Response, next: NextFunction
     const ids = normalized.map((r) => r.productId as string)
     const products = await Product.find({ _id: { $in: ids } }).lean()
     const byId = new Map(products.map((p) => [String(p._id), p]))
+    const cashierSoldBy = await resolveCashierSoldByContext(userId)
     const reserved = await reservedQtyByProduct()
 
     if (quoteId) {
@@ -424,14 +499,13 @@ export async function createSale(req: Request, res: Response, next: NextFunction
           name: qLine.name,
           quantity: qLine.quantity,
           unitPrice: qLine.unitPrice,
-          stockOverrideApproved: row?.stockOverrideApproved === true,
-          stockOverrideScope: row?.stockOverrideApproved === true ? row.stockOverrideScope : undefined,
-          stockOverrideAvailableQty: row?.stockOverrideApproved === true ? row.stockOverrideAvailableQty : undefined,
+          ...saleStockOverrideFields(row ?? {}),
           listUnitPrice:
             qLine.listUnitPrice !== undefined && Math.abs(qLine.listUnitPrice - qLine.unitPrice) > 0.0001
               ? qLine.listUnitPrice
               : undefined,
           lineTotal: qLine.lineTotal,
+          ...soldByFieldsForProduct(p, cashierSoldBy),
         })
       }
       const sumLines = round2(lines.reduce((s, l) => s + l.lineTotal, 0))
@@ -472,15 +546,10 @@ export async function createSale(req: Request, res: Response, next: NextFunction
               name: p.name,
               quantity: seg.quantity,
               unitPrice: seg.unitPrice,
-            stockOverrideApproved: row.stockOverrideApproved === true,
-            stockOverrideScope: row.stockOverrideApproved === true ? row.stockOverrideScope : undefined,
-            stockOverrideAvailableQty: row.stockOverrideApproved === true ? row.stockOverrideAvailableQty : undefined,
-              listUnitPrice:
-                seg.listUnitPrice !== undefined && Math.abs(seg.listUnitPrice - seg.unitPrice) > 0.0001
-                  ? seg.listUnitPrice
-                  : undefined,
+              ...saleStockOverrideFields(row),
               lineTotal: seg.lineTotal,
               ...saleLineAttributionFields(row),
+              ...soldByFieldsForProduct(p, cashierSoldBy),
             })
           }
         } else {
@@ -509,11 +578,10 @@ export async function createSale(req: Request, res: Response, next: NextFunction
             quantity: qty,
             unitPrice,
             listUnitPrice: Math.abs(listUnitPrice - unitPrice) > 0.0001 ? listUnitPrice : undefined,
-            stockOverrideApproved: row.stockOverrideApproved === true,
-            stockOverrideScope: row.stockOverrideApproved === true ? row.stockOverrideScope : undefined,
-            stockOverrideAvailableQty: row.stockOverrideApproved === true ? row.stockOverrideAvailableQty : undefined,
+            ...saleStockOverrideFields(row),
             lineTotal,
             ...saleLineAttributionFields(row),
+            ...soldByFieldsForProduct(p, cashierSoldBy),
           })
         }
       }
@@ -626,8 +694,45 @@ export async function createSale(req: Request, res: Response, next: NextFunction
     }
     const loyaltyDiscountAmount = loyaltyPlan?.loyaltyDiscountAmount ?? 0
 
+    const settingsDoc = await ensureStoreSettingsDoc()
+    const roundingConfig = cashRoundingFromSettings(settingsDoc as unknown as IStoreSettings)
+    const paymentLeg = computeCashPaymentLeg({
+      merchandiseTotal: total,
+      loyaltyDiscount: loyaltyDiscountAmount,
+      storeCredit: storeCreditAmount,
+      onAccount: onAccountAmount,
+      cardAmount,
+      config: roundingConfig,
+    })
+    const expectedAdjustment = paymentLeg.cashRoundingAdjustment
+    const clientAdjustment = round2(Number(rawCashRoundingAdjustment ?? 0))
+
+    if (paymentLeg.cashAmount > 0.005) {
+      if (roundingConfig.enabled) {
+        if (Math.abs(clientAdjustment - expectedAdjustment) > 0.02) {
+          res.status(400).json({ message: 'Cash rounding adjustment mismatch' })
+          return
+        }
+      } else if (Math.abs(clientAdjustment) > 0.005) {
+        res.status(400).json({ message: 'Cash rounding is disabled' })
+        return
+      }
+      if (Math.abs(cashAmount - paymentLeg.cashAmount) > 0.02) {
+        res.status(400).json({ message: 'Cash amount does not match payable total' })
+        return
+      }
+    } else if (Math.abs(clientAdjustment) > 0.005) {
+      res.status(400).json({ message: 'Cash rounding not applicable for this sale' })
+      return
+    }
+    if (cardAmount > 0.005 && Math.abs(cardAmount - paymentLeg.cardAmount) > 0.02) {
+      res.status(400).json({ message: 'Card amount does not match payable total' })
+      return
+    }
+
     const covered = round2(cashAmount + cardAmount + storeCreditAmount + onAccountAmount + loyaltyDiscountAmount)
-    if (Math.abs(covered - total) > 0.02) {
+    const payableTotal = round2(total + expectedAdjustment)
+    if (Math.abs(covered - payableTotal) > 0.02) {
       res.status(400).json({ message: 'Payment total must match sale total' })
       return
     }
@@ -749,12 +854,15 @@ export async function createSale(req: Request, res: Response, next: NextFunction
               purchaseOrderNumber: hasOa ? purchaseOrderNumber : undefined,
               tillCode: tillCode || undefined,
               shiftId: openShift?._id ?? undefined,
+              cashierSignInMethod: cashierSignInMethod ?? undefined,
               loyaltyPhone: loyaltyPlan?.phone,
               loyaltyMemberId: loyaltyPlan?.memberId,
               loyaltyPointsEarned: loyaltyPlan && loyaltyPlan.pointsEarned > 0 ? loyaltyPlan.pointsEarned : undefined,
               loyaltyPointsRedeemed:
                 loyaltyPlan && loyaltyPlan.pointsRedeemed > 0 ? loyaltyPlan.pointsRedeemed : undefined,
               loyaltyDiscountAmount: loyaltyDiscountAmount > 0 ? loyaltyDiscountAmount : undefined,
+              cashRoundingAdjustment:
+                Math.abs(expectedAdjustment) > 0.005 ? expectedAdjustment : undefined,
             },
           ],
           session ? { session } : undefined,
@@ -879,6 +987,11 @@ export async function createSale(req: Request, res: Response, next: NextFunction
         loyaltyDiscountAmount: loyaltyDiscountAmount > 0 ? loyaltyDiscountAmount : undefined,
       })
     }
+    try {
+      await maybeAutoClockOutOnSale(userId, new Date())
+    } catch {
+      // Sale already committed; auto clock-out is best-effort.
+    }
     res.status(201).json(payload)
   } catch (e) {
     next(e)
@@ -948,38 +1061,6 @@ type RefundBody = {
   lines?: Array<{ lineIndex?: number; quantity?: number }>
 }
 
-async function saleRefundProgress(sale: { _id: Types.ObjectId; items: Array<{ quantity: number }>; total: number }) {
-  const refunds = await SaleRefund.find({ saleId: sale._id }).select('lines refundTotal reversedStoreCredit reversedOnAccount').lean()
-  const refundedByIndex = new Map<number, number>()
-  let refundedTotal = 0
-  let reversedStoreCredit = 0
-  let reversedOnAccount = 0
-  for (const r of refunds) {
-    refundedTotal = round2(refundedTotal + Number(r.refundTotal ?? 0))
-    reversedStoreCredit = round2(reversedStoreCredit + Number(r.reversedStoreCredit ?? 0))
-    reversedOnAccount = round2(reversedOnAccount + Number(r.reversedOnAccount ?? 0))
-    for (const l of r.lines ?? []) {
-      const idx = Number(l.saleLineIndex ?? -1)
-      if (!Number.isInteger(idx) || idx < 0) continue
-      const q = Math.max(0, Number(l.quantity ?? 0))
-      refundedByIndex.set(idx, round2((refundedByIndex.get(idx) ?? 0) + q))
-    }
-  }
-  const lines = sale.items.map((line, index) => {
-    const refundedQty = round2(Math.max(0, refundedByIndex.get(index) ?? 0))
-    const soldQty = round2(Math.max(0, Number(line.quantity ?? 0)))
-    const remainingQty = round2(Math.max(0, soldQty - refundedQty))
-    return { index, soldQty, refundedQty, remainingQty }
-  })
-  return {
-    refundedTotal: round2(Math.min(Number(sale.total ?? 0), refundedTotal)),
-    remainingTotal: round2(Math.max(0, Number(sale.total ?? 0) - refundedTotal)),
-    reversedStoreCredit,
-    reversedOnAccount,
-    lines,
-  }
-}
-
 export async function getSaleRefundPreview(req: Request, res: Response, next: NextFunction) {
   try {
     const id = String(req.params.id ?? '').trim()
@@ -999,7 +1080,7 @@ export async function getSaleRefundPreview(req: Request, res: Response, next: Ne
       res.status(404).json({ message: 'Sale not found' })
       return
     }
-    const progress = await saleRefundProgress({
+    const progress = await saleReturnProgress({
       _id: new Types.ObjectId(String(sale._id)),
       items: (sale.items ?? []).map((x) => ({ quantity: Number(x.quantity ?? 0) })),
       total: Number(sale.total ?? 0),
@@ -1024,6 +1105,167 @@ export async function getSaleRefundPreview(req: Request, res: Response, next: Ne
       refund: progress,
     })
   } catch (e) {
+    next(e)
+  }
+}
+
+export async function getSaleExchangePreview(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!req.user) {
+      res.status(401).json({ message: 'Unauthorized' })
+      return
+    }
+    const id = String(req.params.id ?? '').trim()
+    if (!id || !isValidSaleRouteParam(id)) {
+      res.status(400).json({ message: 'Use MongoDB sale _id (24 hex chars) or 10-char sale id' })
+      return
+    }
+    const sq = saleQueryByRouteParam(id)
+    if (!sq) {
+      res.status(400).json({ message: 'Invalid sale id' })
+      return
+    }
+    const sale = await sq.query
+      .populate({ path: 'cashier', select: 'email displayName', populate: { path: 'roleId', select: 'slug' } })
+      .lean()
+    if (!sale) {
+      res.status(404).json({ message: 'Sale not found' })
+      return
+    }
+    if (sale.layById) {
+      res.status(400).json({ message: 'This sale is linked to a lay-by release. Exchange is not supported.' })
+      return
+    }
+    const progress = await saleReturnProgress({
+      _id: new Types.ObjectId(String(sale._id)),
+      items: (sale.items ?? []).map((x) => ({ quantity: Number(x.quantity ?? 0) })),
+      total: Number(sale.total ?? 0),
+    })
+    const saleCreatedAt = (sale as unknown as { createdAt?: Date | string }).createdAt
+    const isAdmin = req.user.role === 'admin'
+    const eligibility = await exchangeEligibilityForSale(saleCreatedAt, isAdmin)
+    let storeCreditPhoneFromLedger: string | undefined
+    if (Number(sale.storeCreditAmount ?? 0) > 0.005) {
+      const redeem = await StoreCreditLedger.findOne({
+        refType: 'sale',
+        refId: sale._id,
+        kind: 'redeem',
+      })
+        .select('phone')
+        .lean()
+      if (redeem?.phone) storeCreditPhoneFromLedger = redeem.phone
+    }
+    res.json({
+      sale: {
+        ...sale,
+        cashier: serializeCashier(sale.cashier),
+        ...(storeCreditPhoneFromLedger ? { storeCreditPhone: storeCreditPhoneFromLedger } : {}),
+      },
+      return: progress,
+      eligibility,
+    })
+  } catch (e) {
+    next(e)
+  }
+}
+
+type ExchangeBody = {
+  note?: string
+  adminBypassEligibility?: boolean
+  returnLines?: Array<{ lineIndex?: number; quantity?: number }>
+  newLines?: Array<{ productId?: string; quantity?: number }>
+  settlementKind?: string
+  cashTendered?: number
+  changeDue?: number
+  storeCreditPhone?: string
+  tillCode?: string
+}
+
+export async function exchangeSale(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!req.user) {
+      res.status(401).json({ message: 'Unauthorized' })
+      return
+    }
+    const id = String(req.params.id ?? '').trim()
+    if (!id || !isValidSaleRouteParam(id)) {
+      res.status(400).json({ message: 'Use MongoDB sale _id (24 hex chars) or 10-char sale id' })
+      return
+    }
+    const body = (req.body ?? {}) as ExchangeBody
+    const settlementRaw = typeof body.settlementKind === 'string' ? body.settlementKind.trim() : ''
+    const settlementKinds: SaleExchangeSettlementKind[] = [
+      'even',
+      'customer_pays_cash',
+      'customer_receives_cash',
+      'customer_receives_store_credit',
+    ]
+    if (!settlementKinds.includes(settlementRaw as SaleExchangeSettlementKind)) {
+      res.status(400).json({ message: 'Invalid settlementKind' })
+      return
+    }
+    const sq = saleQueryByRouteParam(id)
+    if (!sq) {
+      res.status(400).json({ message: 'Invalid sale id' })
+      return
+    }
+    const sale = await sq.query.lean()
+    if (!sale) {
+      res.status(404).json({ message: 'Sale not found' })
+      return
+    }
+    const saleCreatedAt = (sale as unknown as { createdAt?: Date | string }).createdAt
+    const isAdmin = req.user.role === 'admin'
+    const result = await performSaleExchange({
+      sale: {
+        _id: new Types.ObjectId(String(sale._id)),
+        saleId: sale.saleId,
+        tillCode: sale.tillCode,
+        items: (sale.items ?? []).map((x) => ({
+          product: x.product ?? null,
+          name: x.name,
+          quantity: Number(x.quantity ?? 0),
+          unitPrice: Number(x.unitPrice ?? 0),
+          listUnitPrice: x.listUnitPrice,
+        })),
+        total: Number(sale.total ?? 0),
+        layById: sale.layById ?? null,
+        createdAt: saleCreatedAt ? new Date(saleCreatedAt) : undefined,
+        storeCreditAmount: sale.storeCreditAmount,
+        onAccountAmount: sale.onAccountAmount,
+        houseAccountId: sale.houseAccountId ?? null,
+        loyaltyMemberId: sale.loyaltyMemberId ?? null,
+        loyaltyPhone: sale.loyaltyPhone ?? null,
+        loyaltyPointsEarned: sale.loyaltyPointsEarned,
+        loyaltyPointsRedeemed: sale.loyaltyPointsRedeemed,
+        refundStatus: sale.refundStatus,
+      },
+      userId: String(req.user.id),
+      isAdmin,
+      tillCode: typeof body.tillCode === 'string' ? body.tillCode.trim() : undefined,
+      note: body.note,
+      adminBypassEligibility: Boolean(body.adminBypassEligibility),
+      returnLinesRaw: Array.isArray(body.returnLines) ? body.returnLines : [],
+      newLinesRaw: Array.isArray(body.newLines) ? body.newLines : [],
+      settlementKind: settlementRaw as SaleExchangeSettlementKind,
+      cashTendered: body.cashTendered,
+      changeDue: body.changeDue,
+      storeCreditPhone: body.storeCreditPhone,
+    })
+    const out = await Sale.findById(sale._id)
+      .populate({ path: 'cashier', select: 'email displayName', populate: { path: 'roleId', select: 'slug' } })
+      .lean()
+    res.status(200).json({
+      message: 'Exchange recorded',
+      exchangeId: String(result.exchangeId),
+      sale: out ? { ...out, cashier: serializeCashier(out.cashier) } : null,
+      exchangeSettlement: result,
+    })
+  } catch (e) {
+    if (e instanceof ExchangeError) {
+      res.status(e.status).json({ message: e.message })
+      return
+    }
     next(e)
   }
 }
@@ -1067,7 +1309,7 @@ export async function refundSale(req: Request, res: Response, next: NextFunction
       return
     }
 
-    const progress = await saleRefundProgress({
+    const progress = await saleReturnProgress({
       _id: new Types.ObjectId(String(sale._id)),
       items: (sale.items ?? []).map((x) => ({ quantity: Number(x.quantity ?? 0) })),
       total: Number(sale.total ?? 0),
@@ -1362,6 +1604,72 @@ export async function listSales(req: Request, res: Response, next: NextFunction)
       sales: sales.map((s) => ({
         ...s,
         cashier: serializeCashier(s.cashier),
+      })),
+    })
+  } catch (e) {
+    next(e)
+  }
+}
+
+const ADJUSTMENT_LOOKUP_MAX_DAYS = 14
+
+/** POS refund/exchange: browse recent sales when customer has no receipt id (cashiers: manager-approved). */
+export async function listSalesForAdjustment(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!req.user) {
+      res.status(401).json({ message: 'Unauthorized' })
+      return
+    }
+    const canFullRead = hasPermission(req.user.permissions, req.user.role, 'sales.read')
+    const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), canFullRead ? 100 : 50)
+    const skip = Math.min(Math.max(Number(req.query.skip) || 0, 0), 5000)
+
+    const query: Request['query'] = { ...req.query }
+    if (!canFullRead) {
+      const minFrom = new Date()
+      minFrom.setDate(minFrom.getDate() - ADJUSTMENT_LOOKUP_MAX_DAYS)
+      minFrom.setHours(0, 0, 0, 0)
+      const fromRaw = typeof query.from === 'string' ? query.from.trim() : ''
+      if (!fromRaw) {
+        query.from = minFrom.toISOString()
+      } else {
+        const requested = new Date(fromRaw)
+        if (!Number.isNaN(requested.getTime()) && requested < minFrom) {
+          query.from = minFrom.toISOString()
+        }
+      }
+    }
+
+    const { filter, error } = buildSaleListFilter(query)
+    if (error) {
+      res.status(400).json({ message: error })
+      return
+    }
+
+    const [total, sales] = await Promise.all([
+      Sale.countDocuments(filter),
+      Sale.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select('saleId tillCode total paymentMethod refundStatus createdAt items.name items.quantity')
+        .lean(),
+    ])
+
+    res.json({
+      total,
+      sales: sales.map((s) => ({
+        _id: String(s._id),
+        saleId: s.saleId,
+        tillCode: s.tillCode,
+        total: s.total,
+        paymentMethod: s.paymentMethod,
+        refundStatus: s.refundStatus,
+        createdAt: (s as { createdAt?: Date }).createdAt,
+        items: (s.items ?? []).map((it) => ({
+          name: it.name,
+          quantity: it.quantity,
+        })),
       })),
     })
   } catch (e) {

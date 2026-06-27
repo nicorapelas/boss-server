@@ -8,6 +8,48 @@ export interface IUserLegacy {
   canLogin?: boolean
 }
 
+export type UserPaymentTerms = 'weekly' | 'biweekly' | 'monthly' | 'custom'
+
+export interface IUserStaffDocument {
+  originalName: string
+  mimeType?: string
+  uploadedAt: Date
+  uploadedBy?: Types.ObjectId | null
+}
+
+export interface IUserStaffLoan {
+  startDate?: Date | null
+  amount?: number | null
+  terms?: string | null
+  notes?: string | null
+}
+
+export interface IUserHrProfile {
+  phone?: string | null
+  startDate?: Date | null
+  paymentTerms?: UserPaymentTerms | null
+  paymentAmount?: number | null
+  notes?: string | null
+  scoreCard?: string | null
+  contractDocument?: IUserStaffDocument | null
+  idDocument?: IUserStaffDocument | null
+  loans?: IUserStaffLoan[]
+}
+
+export interface IUserFaceEnrollment {
+  /** Averaged 128-D face descriptor (face-api). */
+  embedding: number[]
+  modelId: string
+  sampleCount: number
+  enrolledAt: Date
+  enrolledBy?: Types.ObjectId | null
+  /** When the staff member gave consent for biometric capture. */
+  staffConsentAt?: Date
+  /** Back Office user who recorded staff consent. */
+  staffConsentRecordedBy?: Types.ObjectId | null
+  consentVersion?: string
+}
+
 export interface IUser {
   email: string
   badgeCode?: string
@@ -17,6 +59,8 @@ export interface IUser {
   active?: boolean
   allowOfflineLogin?: boolean
   allowShopAssistCatalogAdjustment?: boolean
+  faceEnrollment?: IUserFaceEnrollment | null
+  hrProfile?: IUserHrProfile | null
   legacy?: IUserLegacy
   refreshTokenHash?: string | null
   refreshTokenExpires?: Date | null
@@ -32,6 +76,48 @@ const userSchema = new Schema<IUser>(
     active: { type: Boolean, default: true },
     allowOfflineLogin: { type: Boolean, default: false },
     allowShopAssistCatalogAdjustment: { type: Boolean, default: false },
+    faceEnrollment: {
+      embedding: { type: [Number], default: undefined },
+      modelId: { type: String, trim: true },
+      sampleCount: { type: Number, min: 1 },
+      enrolledAt: { type: Date },
+      enrolledBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+      staffConsentAt: { type: Date },
+      staffConsentRecordedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+      consentVersion: { type: String, trim: true },
+    },
+    hrProfile: {
+      phone: { type: String, trim: true, default: null },
+      startDate: { type: Date, default: null },
+      paymentTerms: {
+        type: String,
+        enum: ['weekly', 'biweekly', 'monthly', 'custom', null],
+        default: null,
+      },
+      paymentAmount: { type: Number, min: 0, default: null },
+      notes: { type: String, trim: true, default: null },
+      scoreCard: { type: String, trim: true, default: null },
+      contractDocument: {
+        originalName: { type: String, trim: true },
+        mimeType: { type: String, trim: true },
+        uploadedAt: { type: Date },
+        uploadedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+      },
+      idDocument: {
+        originalName: { type: String, trim: true },
+        mimeType: { type: String, trim: true },
+        uploadedAt: { type: Date },
+        uploadedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+      },
+      loans: [
+        {
+          startDate: { type: Date, default: null },
+          amount: { type: Number, min: 0, default: null },
+          terms: { type: String, trim: true, default: null },
+          notes: { type: String, trim: true, default: null },
+        },
+      ],
+    },
     legacy: {
       source: { type: String, enum: ['vector'] },
       userNo: { type: Number },

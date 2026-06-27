@@ -25,7 +25,7 @@ export interface IStoreCreditLedgerEntry {
   phone: string
   amount: number
   kind: 'issue' | 'redeem'
-  refType: 'layby_cancel' | 'sale'
+  refType: 'layby_cancel' | 'sale' | 'sale_exchange' | 'manual_return'
   refId: Types.ObjectId
   note?: string
   createdBy?: Types.ObjectId
@@ -37,7 +37,7 @@ const ledgerSchema = new Schema<IStoreCreditLedgerEntry>(
     phone: { type: String, required: true, trim: true },
     amount: { type: Number, required: true },
     kind: { type: String, enum: ['issue', 'redeem'], required: true },
-    refType: { type: String, enum: ['layby_cancel', 'sale'], required: true },
+    refType: { type: String, enum: ['layby_cancel', 'sale', 'sale_exchange', 'manual_return'], required: true },
     refId: { type: Schema.Types.ObjectId, required: true },
     note: { type: String, trim: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User' },

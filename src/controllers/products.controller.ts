@@ -220,6 +220,7 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
       volumeTieringEnabled,
       volumeTiers,
       jobCardLabourPerUnit,
+      trackSoldBy,
     } = req.body as {
       name?: string
       sku?: string
@@ -232,6 +233,7 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
       volumeTieringEnabled?: boolean
       volumeTiers?: unknown
       jobCardLabourPerUnit?: unknown
+      trackSoldBy?: boolean
     }
     if (!name || !sku || price === undefined) {
       res.status(400).json({ message: 'name, sku, and price required' })
@@ -272,6 +274,7 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
       trackInventory: trackInventory !== false,
       volumeTieringEnabled: vol,
       volumeTiers: v.tiers,
+      trackSoldBy: trackSoldBy === true,
       ...(labour !== undefined ? { jobCardLabourPerUnit: labour } : {}),
     })
     if (initialStock !== 0) {
@@ -303,6 +306,7 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       volumeTieringEnabled,
       volumeTiers,
       jobCardLabourPerUnit,
+      trackSoldBy,
     } = req.body as {
       name?: string
       sku?: string
@@ -315,6 +319,7 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       volumeTieringEnabled?: boolean
       volumeTiers?: unknown
       jobCardLabourPerUnit?: unknown
+      trackSoldBy?: boolean
     }
     const $set: Record<string, unknown> = {}
     if (name !== undefined) $set.name = name
@@ -339,6 +344,7 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
     if (price !== undefined) $set.price = price
     if (stock !== undefined) $set.stock = stock
     if (trackInventory !== undefined) $set.trackInventory = Boolean(trackInventory)
+    if (trackSoldBy !== undefined) $set.trackSoldBy = Boolean(trackSoldBy)
     if (jobCardLabourPerUnit !== undefined) {
       if (jobCardLabourPerUnit === null || jobCardLabourPerUnit === '') {
         $set.jobCardLabourPerUnit = 0

@@ -49,8 +49,8 @@ export function expandVolumeLineSegments(
   }
   const u = unitPriceForLineQuantity(quantity, bp, true, volumeTiers)
   const lineTotal = round2(quantity * u)
-  const useList = u < bp - 0.0001
-  return [{ quantity, unitPrice: u, lineTotal, listUnitPrice: useList ? bp : undefined }]
+  // listUnitPrice is for cashier price overrides only — not volume tier (see shifts Z report).
+  return [{ quantity, unitPrice: u, lineTotal, listUnitPrice: undefined }]
 }
 
 export function validateVolumeTiers(
@@ -115,6 +115,22 @@ export function productHasVolumeTiering(
   return Boolean(
     p.volumeTieringEnabled && Array.isArray(p.volumeTiers) && p.volumeTiers.length > 0,
   )
+}
+
+/** True when unitPrice matches the configured volume tier for this quantity (not a cashier override). */
+export function isVolumeTierUnitPrice(
+  product: Pick<IProduct, 'price' | 'volumeTieringEnabled' | 'volumeTiers'>,
+  quantity: number,
+  unitPrice: number,
+): boolean {
+  if (!productHasVolumeTiering(product)) return false
+  const expected = unitPriceForLineQuantity(
+    quantity,
+    round2(product.price ?? 0),
+    true,
+    product.volumeTiers,
+  )
+  return Math.abs(expected - round2(unitPrice)) <= 0.02
 }
 
 export function expandForProduct(

@@ -7,6 +7,8 @@ export const PERMISSION_CATALOG: { id: string; label: string }[] = [
   { id: 'sales.create', label: 'Record sales (POS)' },
   { id: 'sales.read', label: 'View sales history / reports' },
   { id: 'sales.refund', label: 'Refund a sale (requires sale ID from the system)' },
+  { id: 'sales.manual_return', label: 'Manual return without sale record (admin role only at API)' },
+  { id: 'sales.exchange', label: 'Exchange items on a prior sale (manager / admin)' },
   { id: 'shifts.manage', label: 'POS shift end / Z-clear operations' },
   { id: 'shifts.read', label: 'View shift history / Z reports' },
   { id: 'settings.read', label: 'View store settings' },
@@ -49,6 +51,7 @@ export const CASHIER_PERMISSION_IDS: string[] = [
 export const MANAGER_PERMISSION_IDS: string[] = [
   ...CASHIER_PERMISSION_IDS,
   'sales.read',
+  'sales.exchange',
   'shifts.read',
   'register.manager',
   'register.price_override',

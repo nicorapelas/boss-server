@@ -63,6 +63,8 @@ export interface IProduct {
   priceTiers?: IProductPriceTiers
   /** VAT-inclusive labour added per catalog unit when the line is sold on a job card (POS). Omitted or 0 = none. */
   jobCardLabourPerUnit?: number
+  /** Credit “sold by” stats to the logged-in cashier when this SKU is sold. */
+  trackSoldBy?: boolean
   /** Incremented when a catalog photo is stored (1024×1024 WebP on disk). 0 = no photo. */
   photoRevision?: number
   legacy?: IProductLegacy
@@ -116,6 +118,7 @@ const productSchema = new Schema<IProduct>(
       price6: { type: Number },
     },
     jobCardLabourPerUnit: { type: Number, min: 0, default: undefined },
+    trackSoldBy: { type: Boolean, default: false },
     photoRevision: { type: Number, min: 0, default: 0 },
     legacy: {
       source: { type: String, enum: ['vector'] },

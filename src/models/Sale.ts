@@ -18,11 +18,17 @@ export interface ISaleLine {
   stockOverrideScope?: 'offline' | 'online'
   /** Catalog available qty snapshot seen by POS when override was approved. */
   stockOverrideAvailableQty?: number
+  /** Manager who approved a two-person stock override (may differ from cashier). */
+  stockOverrideApprovedByUserId?: Types.ObjectId | null
+  stockOverrideApprovedByDisplayName?: string
   lineTotal: number
   /** Snapshot: staff who rang this line (e.g. job card multi-user). */
   addedByUserId?: Types.ObjectId | null
   addedByDisplayName?: string
   addedAt?: Date | null
+  /** Set when product had trackSoldBy at sale time — credits logged-in cashier. */
+  soldByUserId?: Types.ObjectId | null
+  soldByDisplayName?: string
 }
 
 export interface ISaleLegacy {
@@ -68,6 +74,8 @@ export interface ISale {
   tillCode?: string
   /** Active shift session when sale was recorded. */
   shiftId?: Types.ObjectId | null
+  /** How the cashier unlocked the till for this shift (snapshot at sale time). */
+  cashierSignInMethod?: 'badge' | 'face' | 'password' | 'offline_badge' | 'offline_password'
   /** 10-character hex id for receipts, refunds, and search (not the Mongo _id) */
   saleId?: string
   /** Partial/full refund state driven by SaleRefund records. */
@@ -86,6 +94,8 @@ export interface ISale {
   loyaltyPointsRedeemed?: number
   /** Rand discount from redeemed loyalty points (counts toward payment coverage). */
   loyaltyDiscountAmount?: number
+  /** Cash rounding adjustment (+ customer pays more, − less) when SA coin rounding applies. */
+  cashRoundingAdjustment?: number
 }
 
 const saleLineSchema = new Schema<ISaleLine>(
@@ -101,10 +111,14 @@ const saleLineSchema = new Schema<ISaleLine>(
     stockOverrideApproved: { type: Boolean, default: false },
     stockOverrideScope: { type: String, enum: ['offline', 'online'] },
     stockOverrideAvailableQty: { type: Number },
+    stockOverrideApprovedByUserId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    stockOverrideApprovedByDisplayName: { type: String, trim: true, maxlength: 120 },
     lineTotal: { type: Number, required: true, min: 0 },
     addedByUserId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     addedByDisplayName: { type: String, trim: true, maxlength: 120 },
     addedAt: { type: Date, default: null },
+    soldByUserId: { type: Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    soldByDisplayName: { type: String, trim: true, maxlength: 120 },
   },
   { _id: false },
 )
@@ -132,6 +146,11 @@ const saleSchema = new Schema<ISale>(
     purchaseOrderNumber: { type: String, trim: true, maxlength: 120 },
     tillCode: { type: String, trim: true, index: true },
     shiftId: { type: Schema.Types.ObjectId, ref: 'ShiftSession', default: null, sparse: true, index: true },
+    cashierSignInMethod: {
+      type: String,
+      enum: ['badge', 'face', 'password', 'offline_badge', 'offline_password'],
+      trim: true,
+    },
     saleId: { type: String, trim: true, minlength: SALE_ID_HEX_LEN, maxlength: SALE_ID_HEX_LEN, sparse: true, unique: true, index: true },
     refundStatus: { type: String, enum: ['partial', 'refunded'], sparse: true, index: true },
     refundedAt: { type: Date },
@@ -144,6 +163,7 @@ const saleSchema = new Schema<ISale>(
     loyaltyPointsEarned: { type: Number, min: 0 },
     loyaltyPointsRedeemed: { type: Number, min: 0 },
     loyaltyDiscountAmount: { type: Number, min: 0 },
+    cashRoundingAdjustment: { type: Number },
     legacy: {
       source: { type: String, enum: ['vector'] },
       receiptNo: { type: Number },

@@ -36,7 +36,11 @@ export function createApp(options: {
 
   // Debug network/auth reachability from POS terminals without logging secrets.
   app.use((req, _res, next) => {
-    if (req.path === '/api/auth/login' || req.path === '/api/auth/login-badge') {
+    if (
+      req.path === '/api/auth/login' ||
+      req.path === '/api/auth/login-badge' ||
+      req.path === '/api/auth/login-face'
+    ) {
       const sourceIp = req.ip || req.socket.remoteAddress || 'unknown'
       const origin = req.get('origin') ?? 'none'
       const userAgent = req.get('user-agent') ?? 'unknown'

@@ -11,6 +11,7 @@ export interface IHouseAccount {
   contactPerson: string
   email: string
   vatNumber: string
+  companyRegistrationNumber: string
   addressLines: string[]
   paymentTerms: HouseAccountPaymentTerms
   notes: string
@@ -28,6 +29,7 @@ const houseAccountSchema = new Schema<IHouseAccount>(
     contactPerson: { type: String, default: '', trim: true, index: true },
     email: { type: String, default: '', trim: true, lowercase: true, index: true },
     vatNumber: { type: String, default: '', trim: true, index: true },
+    companyRegistrationNumber: { type: String, default: '', trim: true, index: true },
     addressLines: { type: [String], default: [] },
     paymentTerms: {
       type: String,

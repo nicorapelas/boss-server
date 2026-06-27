@@ -1,7 +1,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  DEFAULT_MONGO_CLOUD_BACKUP,
+  mongoDatabaseFromUri,
+  parseScheduleTime,
+} from './mongoCloudBackup.js'
 import type { AppEnvironment, FileConfig, ResolvedConfig } from './types.js'
+import type { MongoCloudBackupConfig } from './mongoCloudBackup.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -41,6 +47,43 @@ function parseCorsOrigins(raw: string | undefined, fallback: string[]): string[]
     .filter(Boolean)
 }
 
+function parseBool(raw: string | undefined, fallback: boolean): boolean {
+  if (raw === undefined || raw === null || String(raw).trim() === '') return fallback
+  const v = String(raw).trim().toLowerCase()
+  if (v === '1' || v === 'true' || v === 'yes' || v === 'on') return true
+  if (v === '0' || v === 'false' || v === 'no' || v === 'off') return false
+  return fallback
+}
+
+function resolveMongoCloudBackup(
+  file: FileConfig,
+  mongodbUri: string,
+): MongoCloudBackupConfig {
+  const fromFile = file.mongoCloudBackup ?? {}
+  const schedule = firstNonEmpty(process.env.MONGO_CLOUD_BACKUP_SCHEDULE, fromFile.schedule) ||
+    DEFAULT_MONGO_CLOUD_BACKUP.schedule
+  parseScheduleTime(schedule)
+
+  const databaseName =
+    firstNonEmpty(
+      process.env.MONGO_CLOUD_BACKUP_DATABASE,
+      fromFile.databaseName,
+    ) || mongoDatabaseFromUri(mongodbUri)
+
+  return {
+    enabled: parseBool(process.env.MONGO_CLOUD_BACKUP_ENABLED, fromFile.enabled ?? false),
+    schedule,
+    destinationUri: firstNonEmpty(
+      process.env.MONGO_CLOUD_BACKUP_URI,
+      fromFile.destinationUri,
+    ),
+    databaseName,
+    dockerMongoContainer:
+      firstNonEmpty(process.env.MONGO_CLOUD_BACKUP_DOCKER_CONTAINER, fromFile.dockerMongoContainer) ||
+      DEFAULT_MONGO_CLOUD_BACKUP.dockerMongoContainer,
+  }
+}
+
 /**
  * Loads `config/development.json` or `config/production.json` based on NODE_ENV,
  * then merges with process.env (env wins). In production, secrets must be set via env.
@@ -73,6 +116,8 @@ export function loadConfig(): ResolvedConfig {
     }
   }
 
+  const mongoCloudBackup = resolveMongoCloudBackup(file, mongodbUri)
+
   return {
     env,
     port,
@@ -80,5 +125,6 @@ export function loadConfig(): ResolvedConfig {
     accessTokenSecret,
     refreshTokenSecret,
     corsOrigins,
+    mongoCloudBackup,
   }
 }

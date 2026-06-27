@@ -9,6 +9,10 @@ import {
   previewStoreRestore,
   restoreStoreBackup,
 } from '../controllers/storeBackup.controller.js'
+import {
+  getCloudBackupStatus,
+  triggerCloudBackup,
+} from '../controllers/mongoCloudBackup.controller.js'
 
 const uploadDir = path.join(os.tmpdir(), 'electropos-store-restore')
 
@@ -53,6 +57,8 @@ function handleRestoreUpload(req: import('express').Request, res: import('expres
 export function storeBackupRouter(requireAuth: RequestHandler) {
   const r = Router()
   r.get('/backup', requireAuth, requirePermission('migration.access'), downloadStoreBackup)
+  r.get('/cloud/status', requireAuth, requirePermission('migration.access'), getCloudBackupStatus)
+  r.post('/cloud', requireAuth, requirePermission('migration.access'), triggerCloudBackup)
   r.post(
     '/restore/preview',
     requireAuth,

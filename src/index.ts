@@ -5,6 +5,7 @@ import { connectDb } from './config/db.js'
 import { ensureRolesAndMigrateUsers } from './bootstrap/ensureRoles.js'
 import { bootstrapQuoteSequences } from './controllers/quotes.controller.js'
 import { repairUserRoleLinks } from './services/userRoleRepair.js'
+import { startMongoCloudBackupScheduler } from './services/mongoCloudBackup.scheduler.js'
 
 async function main() {
   const config = loadConfig()
@@ -21,6 +22,8 @@ async function main() {
     )
   }
   await bootstrapQuoteSequences()
+
+  startMongoCloudBackupScheduler()
 
   const app = createApp({
     accessTokenSecret: config.accessTokenSecret,

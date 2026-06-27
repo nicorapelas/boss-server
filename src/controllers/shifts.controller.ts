@@ -2,11 +2,14 @@ import type { NextFunction, Request, Response } from 'express'
 import { Types } from 'mongoose'
 import { LayBy } from '../models/LayBy.js'
 import { OpenTab } from '../models/OpenTab.js'
+import { Product } from '../models/Product.js'
 import { Quote } from '../models/Quote.js'
 import { Sale } from '../models/Sale.js'
 import { SaleRefund } from '../models/SaleRefund.js'
+import { ManualReturn } from '../models/ManualReturn.js'
 import { ShiftSession } from '../models/ShiftSession.js'
 import { User } from '../models/User.js'
+import { isVolumeTierUnitPrice } from '../utils/volumePrice.js'
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100
@@ -82,7 +85,7 @@ async function summarizeShift(shift: { _id: Types.ObjectId; tillCode: string; op
     paymentMethod: { $ne: 'layby_complete' },
   }
 
-  const [sales, refundRowsRaw, byCashier, tabActivityCount, quoteActivityCount, layByPayAgg] = await Promise.all([
+  const [sales, refundRowsRaw, manualReturnRowsRaw, layByCancelRowsRaw, byCashier, tabActivityCount, quoteActivityCount, layByPayAgg] = await Promise.all([
     Sale.find(saleMatch)
       .select(
         'saleId total paymentMethod payment storeCreditAmount onAccountAmount refundStatus refundPayoutMethod refundPayoutAmount quoteId cashier refundedBy items',
@@ -90,6 +93,15 @@ async function summarizeShift(shift: { _id: Types.ObjectId; tillCode: string; op
       .lean(),
     SaleRefund.find({ createdAt: { $gte: from, $lte: to } })
       .select('saleId saleShortId payoutMethod refundTotal refundCash refundCard refundedBy tillCode')
+      .lean(),
+    ManualReturn.find({ createdAt: { $gte: from, $lte: to } })
+      .select('returnId tillCode payoutMethod returnTotal returnCash returnCard processedBy')
+      .lean(),
+    LayBy.find({
+      status: 'cancelled',
+      'cancellation.at': { $gte: from, $lte: to },
+    })
+      .select('layByNumber cancellation')
       .lean(),
     Sale.aggregate<{ _id: Types.ObjectId; count: number; total: number }>([
       { $match: retailSaleMatch },
@@ -161,12 +173,80 @@ async function summarizeShift(shift: { _id: Types.ObjectId; tillCode: string; op
   )
 
   /** Till on refund doc wins; if missing (legacy), use originating sale’s tillCode so Z matches the till that rang the sale. */
-  const refunds = refundCandidates.filter((r) => {
+  const saleRefunds = refundCandidates.filter((r) => {
     const refundTill = normalizeTillCode(r.tillCode)
     if (refundTill != null) return refundTill === shiftTillNorm
     const saleTill = tillByRefundSaleId.get(String(r.saleId ?? ''))
     return saleTill != null && saleTill === shiftTillNorm
   })
+
+  const manualReturns = (manualReturnRowsRaw as Array<{
+    returnId?: string
+    tillCode?: string
+    payoutMethod?: string
+    returnTotal?: number
+    returnCash?: number
+    returnCard?: number
+    processedBy?: Types.ObjectId
+  }>).filter((row) => {
+    const till = normalizeTillCode(row.tillCode)
+    return till != null && till === shiftTillNorm
+  })
+
+  const layByCancels = (layByCancelRowsRaw as Array<{
+    layByNumber?: string
+    cancellation?: {
+      mode?: string
+      refundAmount?: number
+      refundCash?: number
+      refundCard?: number
+      tillCode?: string
+      by?: Types.ObjectId
+    }
+  }>).filter((row) => {
+    const till = normalizeTillCode(row.cancellation?.tillCode)
+    return till != null && till === shiftTillNorm
+  })
+
+  const refunds = [
+    ...saleRefunds,
+    ...manualReturns.map((row) => ({
+      saleShortId: row.returnId ? `MR-${row.returnId}` : undefined,
+      payoutMethod: row.payoutMethod,
+      refundTotal: row.returnTotal,
+      refundCash: row.returnCash,
+      refundCard: row.returnCard,
+      refundedBy: row.processedBy,
+      tillCode: row.tillCode,
+      saleId: undefined as Types.ObjectId | undefined,
+    })),
+    ...layByCancels.map((row) => {
+      const c = row.cancellation ?? {}
+      const refundCash = Number(c.refundCash ?? 0)
+      const refundCard = Number(c.refundCard ?? 0)
+      const mode = c.mode ?? ''
+      const payoutMethod =
+        mode === 'store_credit'
+          ? 'store_credit'
+          : refundCash > 0.005 && refundCard > 0.005
+            ? 'mixed'
+            : refundCash > 0.005
+              ? 'cash'
+              : refundCard > 0.005
+                ? 'card'
+                : undefined
+      return {
+        saleShortId: row.layByNumber ? `LB-${row.layByNumber}` : undefined,
+        payoutMethod,
+        refundTotal: c.refundAmount,
+        refundCash: c.refundCash,
+        refundCard: c.refundCard,
+        refundedBy: c.by,
+        tillCode: c.tillCode,
+        saleId: undefined as Types.ObjectId | undefined,
+      }
+    }),
+  ]
 
   const refundDeductionByCashier = new Map<string, number>()
   for (const r of refunds) {
@@ -267,6 +347,24 @@ async function summarizeShift(shift: { _id: Types.ObjectId; tillCode: string; op
       refundCard: round2(Number(r.refundCard ?? 0)),
     }
   })
+  const priceOverrideProductIds = Array.from(
+    new Set(
+      nonRefundedSales.flatMap((s) =>
+        (s.items ?? [])
+          .map((line) => String((line as { product?: unknown }).product ?? ''))
+          .filter((id) => Types.ObjectId.isValid(id)),
+      ),
+    ),
+  )
+  const priceOverrideProducts = priceOverrideProductIds.length
+    ? await Product.find({ _id: { $in: priceOverrideProductIds.map((id) => new Types.ObjectId(id)) } })
+        .select('price volumeTieringEnabled volumeTiers')
+        .lean()
+    : []
+  const priceOverrideProductById = new Map(
+    priceOverrideProducts.map((p) => [String(p._id), p]),
+  )
+
   const priceOverrides = nonRefundedSales.flatMap((s) => {
     const cashierId = String(s.cashier ?? '')
     const cashierName = userById.get(cashierId) || ''
@@ -277,6 +375,10 @@ async function summarizeShift(shift: { _id: Types.ObjectId; tillCode: string; op
         if (listRaw === undefined || listRaw === null) return false
         const list = Number(listRaw)
         const overridden = Number((line as { unitPrice?: number }).unitPrice ?? 0)
+        const qty = round2(Number((line as { quantity?: number }).quantity ?? 0))
+        const productId = String((line as { product?: unknown }).product ?? '')
+        const product = priceOverrideProductById.get(productId)
+        if (product && isVolumeTierUnitPrice(product, qty, overridden)) return false
         return Number.isFinite(list) && Number.isFinite(overridden) && Math.abs(list - overridden) > 0.0001
       })
       .map((line) => {

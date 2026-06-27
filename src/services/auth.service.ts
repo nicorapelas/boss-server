@@ -3,8 +3,16 @@ import type { IRole } from '../models/Role.js'
 import { Role } from '../models/Role.js'
 import { User, hashPassword } from '../models/User.js'
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../utils/jwt.js'
+import { REFRESH_TOKEN_DB_MS } from '../config/authSession.js'
 import { coerceObjectId } from '../utils/objectId.js'
 import { hashToken } from '../utils/tokenHash.js'
+import {
+  FACE_MODEL_ID,
+  findBestFaceMatch,
+  validateFaceEmbedding,
+} from '../utils/faceMatch.js'
+import { ensureStoreSettingsDoc } from '../controllers/storeSettings.controller.js'
+import { posLoginMethodFromSettings } from '../utils/posLoginMethod.js'
 
 export class AuthError extends Error {
   status: number
@@ -72,6 +80,48 @@ export async function loginUser(
   return createSessionForUser(user, r, accessSecret, refreshSecret)
 }
 
+export async function loginByFace(
+  embeddingRaw: unknown,
+  accessSecret: string,
+  refreshSecret: string,
+) {
+  const settings = await ensureStoreSettingsDoc()
+  if (posLoginMethodFromSettings(settings) !== 'face') {
+    throw new AuthError(403, 'Face login is disabled for this store')
+  }
+
+  const probe = validateFaceEmbedding(embeddingRaw)
+  if (!probe) throw new AuthError(400, 'Invalid face embedding')
+
+  const enrolled = await User.find({
+    active: { $ne: false },
+    'faceEnrollment.embedding.0': { $exists: true },
+    'faceEnrollment.modelId': FACE_MODEL_ID,
+  })
+    .select({ faceEnrollment: 1 })
+    .populate<{ roleId: IRole }>('roleId')
+    .lean()
+
+  const candidates = enrolled
+    .map((u) => {
+      const emb = u.faceEnrollment?.embedding
+      if (!Array.isArray(emb) || emb.length === 0) return null
+      return { userId: String(u._id), embedding: emb }
+    })
+    .filter((c): c is { userId: string; embedding: number[] } => c != null)
+
+  if (candidates.length === 0) throw new AuthError(401, 'No staff enrolled for face login')
+
+  const match = findBestFaceMatch(probe, candidates)
+  if (!match) throw new AuthError(401, 'Face not recognized')
+
+  const user = await User.findById(match.userId).populate<{ roleId: IRole }>('roleId')
+  if (!user) throw new AuthError(401, 'Face not recognized')
+  const r = await resolveUserRole(user)
+  assertUserLoginAllowed(user.active, r.slug, user.legacy?.source, user.legacy?.canLogin)
+  return createSessionForUser(user, r, accessSecret, refreshSecret)
+}
+
 export async function loginByBadge(
   badgeCode: string,
   accessSecret: string,
@@ -97,10 +147,7 @@ export async function refreshSession(refreshToken: string, accessSecret: string,
   }
 
   const user = await User.findById(payload.sub).populate<{ roleId: IRole }>('roleId')
-  if (!user?.refreshTokenHash || !user.refreshTokenExpires) {
-    throw new AuthError(401, 'Session expired')
-  }
-  if (user.refreshTokenExpires.getTime() < Date.now()) {
+  if (!user?.refreshTokenHash) {
     throw new AuthError(401, 'Session expired')
   }
   const matches = user.refreshTokenHash === hashToken(refreshToken)
@@ -117,14 +164,10 @@ export async function refreshSession(refreshToken: string, accessSecret: string,
     },
     accessSecret,
   )
-  const newRefresh = signRefreshToken(user.id, refreshSecret)
-  user.refreshTokenHash = hashToken(newRefresh)
-  user.refreshTokenExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-  await user.save()
 
   return {
     accessToken,
-    refreshToken: newRefresh,
+    refreshToken,
     user: {
       id: user.id,
       email: user.email,
@@ -187,7 +230,7 @@ async function createSessionForUser(
   )
   const refreshToken = signRefreshToken(userId, refreshSecret)
   user.refreshTokenHash = hashToken(refreshToken)
-  user.refreshTokenExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+  user.refreshTokenExpires = new Date(Date.now() + REFRESH_TOKEN_DB_MS)
   await user.save()
 
   return {

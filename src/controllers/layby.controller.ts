@@ -9,6 +9,11 @@ import { StoreSettings } from '../models/StoreSettings.js'
 import { canChargeAboveCatalogPrice, isRegisterManager } from '../utils/requestAuth.js'
 import { productTracksInventory } from '../utils/productInventory.js'
 import { getOrCreateOpenShift } from './shifts.controller.js'
+import { maybeAutoClockOutOnSale } from '../services/attendance.service.js'
+import {
+  computeLayByCancelSettlement,
+  type LayByCancelMode,
+} from '../utils/laybyCancelSettlement.js'
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100
@@ -180,7 +185,6 @@ export async function createLayBy(req: Request, res: Response, next: NextFunctio
             quantity: seg.quantity,
             unitPrice: seg.unitPrice,
             lineTotal: seg.lineTotal,
-            listUnitPrice: seg.listUnitPrice,
           })
         }
       } else {
@@ -544,6 +548,12 @@ async function completeLayByInternal(layById: string, userId: string, tillCode?:
   lb.balance = 0
   lb.completedSaleId = sale._id
   await lb.save()
+
+  try {
+    await maybeAutoClockOutOnSale(userId, new Date())
+  } catch {
+    // Lay-by sale already committed; auto clock-out is best-effort.
+  }
 }
 
 export async function completeLayBy(req: Request, res: Response, next: NextFunction) {
@@ -591,36 +601,48 @@ export async function cancelLayBy(req: Request, res: Response, next: NextFunctio
       return
     }
     const body = req.body as {
-      mode?: 'full_refund' | 'percent_refund' | 'store_credit'
+      mode?: LayByCancelMode
       percent?: number
+      tillCode?: string
     }
     if (!body.mode) {
       res.status(400).json({ message: 'mode required' })
       return
     }
-    const paid = lb.amountPaid
-    let refundAmount = 0
-    let storeCreditIssued = 0
-
-    if (body.mode === 'full_refund') {
-      refundAmount = paid
-    } else if (body.mode === 'percent_refund') {
-      const pct = Number(body.percent)
-      if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
-        res.status(400).json({ message: 'percent required (0–100)' })
-        return
-      }
-      refundAmount = round2((paid * pct) / 100)
-    } else if (body.mode === 'store_credit') {
-      storeCreditIssued = paid
-      refundAmount = paid
-    } else {
+    if (body.mode !== 'full_refund' && body.mode !== 'percent_refund' && body.mode !== 'store_credit') {
       res.status(400).json({ message: 'Invalid mode' })
       return
     }
+    if (body.mode === 'percent_refund') {
+      const pct = Number(body.percent)
+      if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
+        res.status(400).json({ message: 'percent required (1–100)' })
+        return
+      }
+    }
 
-    if (body.mode === 'store_credit' && storeCreditIssued > 0) {
-      const phone = lb.phone
+    const tillCode = normalizeTillCode(body.tillCode)
+    if (body.tillCode != null && !tillCode) {
+      res.status(400).json({ message: 'Invalid tillCode (use letters, numbers, _, -; max 24)' })
+      return
+    }
+    const openShift = tillCode ? await getOrCreateOpenShift(tillCode, String(req.user.id)) : null
+
+    const settlement = computeLayByCancelSettlement({
+      mode: body.mode,
+      amountPaid: lb.amountPaid,
+      payments: lb.payments,
+      percent: body.mode === 'percent_refund' ? Number(body.percent) : undefined,
+    })
+
+    if (settlement.refundTotal < 0.005 && lb.amountPaid > 0.005 && body.mode !== 'full_refund') {
+      res.status(400).json({ message: 'Refund amount must be greater than zero' })
+      return
+    }
+
+    const phone = lb.phone
+    const creditToIssue = round2(settlement.storeCreditIssued + settlement.storeCreditRestored)
+    if (creditToIssue > 0.005) {
       let acct = await StoreCreditAccount.findOne({ phone })
       if (!acct) {
         acct = await StoreCreditAccount.create({
@@ -629,16 +651,19 @@ export async function cancelLayBy(req: Request, res: Response, next: NextFunctio
           balance: 0,
         })
       }
-      acct.balance = round2((acct.balance ?? 0) + storeCreditIssued)
+      acct.balance = round2((acct.balance ?? 0) + creditToIssue)
       await acct.save()
       await StoreCreditLedger.create({
         accountId: acct._id,
         phone,
-        amount: storeCreditIssued,
+        amount: creditToIssue,
         kind: 'issue',
         refType: 'layby_cancel',
         refId: lb._id,
-        note: 'Lay-by cancellation',
+        note:
+          body.mode === 'store_credit'
+            ? 'Lay-by cancellation — store credit'
+            : 'Lay-by cancellation — voucher restored',
         createdBy: new Types.ObjectId(String(req.user.id)),
       })
     }
@@ -647,14 +672,22 @@ export async function cancelLayBy(req: Request, res: Response, next: NextFunctio
     lb.cancellation = {
       mode: body.mode,
       percent: body.mode === 'percent_refund' ? Number(body.percent) : undefined,
-      refundAmount,
-      storeCreditIssued: body.mode === 'store_credit' ? storeCreditIssued : undefined,
+      refundAmount: settlement.refundTotal,
+      refundCash: settlement.refundCash,
+      refundCard: settlement.refundCard,
+      storeCreditRestored: settlement.storeCreditRestored,
+      storeCreditIssued: settlement.storeCreditIssued,
+      tillCode: tillCode || undefined,
+      shiftId: openShift?._id ?? undefined,
       at: new Date(),
       by: new Types.ObjectId(String(req.user.id)),
     }
     await lb.save()
     const out = await LayBy.findById(lb._id).lean()
-    res.json(out)
+    res.json({
+      ...out,
+      cancelSettlement: settlement,
+    })
   } catch (e) {
     next(e)
   }
