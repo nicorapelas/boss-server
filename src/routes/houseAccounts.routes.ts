@@ -3,6 +3,7 @@ import { requirePermission } from '../middleware/requirePermission.middleware.js
 import {
   createHouseAccount,
   getHouseAccount,
+  getHouseAccountStatement,
   listHouseAccountLedger,
   recordHouseAccountPayment,
   searchHouseAccounts,
@@ -17,5 +18,6 @@ export function houseAccountsRouter(requireAuth: RequestHandler) {
   r.patch('/:id', requireAuth, requirePermission('house_accounts.access'), updateHouseAccount)
   r.post('/:id/payments', requireAuth, requirePermission('house_accounts.access'), recordHouseAccountPayment)
   r.get('/:id/ledger', requireAuth, requirePermission('house_accounts.access'), listHouseAccountLedger)
+  r.get('/:id/statement', requireAuth, requirePermission('house_accounts.access'), getHouseAccountStatement)
   return r
 }

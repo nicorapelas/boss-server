@@ -7,6 +7,10 @@ import {
   type HouseAccountPaymentTerms,
 } from '../models/HouseAccount.js'
 import { StoreSettings } from '../models/StoreSettings.js'
+import {
+  buildHouseAccountStatement,
+  parseHouseAccountStatementQuery,
+} from '../services/houseAccountStatement.service.js'
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100
@@ -295,6 +299,25 @@ export async function listHouseAccountLedger(req: Request, res: Response, next: 
       .limit(limit)
       .lean()
     res.json(list)
+  } catch (e) {
+    next(e)
+  }
+}
+
+export async function getHouseAccountStatement(req: Request, res: Response, next: NextFunction) {
+  try {
+    const id = req.params.id
+    if (!Types.ObjectId.isValid(id)) {
+      res.status(400).json({ message: 'Invalid id' })
+      return
+    }
+    const { from, to } = parseHouseAccountStatementQuery(req.query as Record<string, unknown>)
+    const statement = await buildHouseAccountStatement(id, { from, to })
+    if (!statement) {
+      res.status(404).json({ message: 'Account not found' })
+      return
+    }
+    res.json(statement)
   } catch (e) {
     next(e)
   }
